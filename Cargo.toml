@@ -41,7 +41,16 @@ profiling = "1"
 slab = "0.4"
 strum = { version = "0.28", features = ["derive"] }
 web-sys = "0.3.60"
-winit = { version = "0.30" }
+# License policy: avoid Apache-2.0-only dependencies where possible.
+# `wayland-csd-adwaita` (winit default) pulls `sctk-adwaita` ->
+# `ab_glyph`/`owned_ttf_parser` (Apache-2.0), so it is left out. Consequence:
+# Wayland windows get no client-side decorations.
+winit = { version = "0.30", default-features = false, features = [
+    "rwh_06",
+    "x11",
+    "wayland",
+    "wayland-dlopen",
+] }
 openxr = "0.21"
 num_cpus = "1"
 

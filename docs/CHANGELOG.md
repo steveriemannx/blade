@@ -2,6 +2,7 @@ Changelog for *Blade* project
 
 ## (TBD)
 
+- build: disable winit's default `wayland-csd-adwaita` feature, dropping the Apache-2.0-only `ab_glyph`/`owned_ttf_parser` chain; Wayland windows no longer get client-side decorations
 - render: retain SVGF history on frozen frames; vehicle diagnostic captures require `BLADE_CAPTURE_VEHICLE=1` even when running ignored tests
 - graphics: ray queries require macOS 13+ / iOS 16+ on Metal; compute limits report direct sampled-texture slots, and renderer resource tables account for Vulkan image descriptors
 - render: `GBufferViews::motion` is now `Rgba16Float`, with screen-space motion in XY and previous-hit distance in Z
