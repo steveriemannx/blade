@@ -10,7 +10,14 @@ repository = "https://github.com/kvark/blade"
 
 [lib]
 
+[[example]]
+name = "d3d12-probe"
+required-features = ["d3d12"]
+
 [features]
+# Direct3D 12 backend (Windows only). Phase 0 only initializes the device,
+# see `etc/d3d12.md` for the design and the phased plan.
+d3d12 = ["dep:windows"]
 
 [dependencies]
 bitflags = { workspace = true }
@@ -22,6 +29,15 @@ mint = { workspace = true }
 naga = { workspace = true }
 raw-window-handle = "0.6"
 once_cell = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", optional = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D12",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+] }
 
 [target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
 objc2 = "0.6"

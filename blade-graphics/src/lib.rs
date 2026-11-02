@@ -78,6 +78,12 @@ pub mod derive;
 )]
 #[cfg_attr(any(gles, target_arch = "wasm32"), path = "gles/mod.rs")]
 mod hal;
+
+/// Direct3D 12 backend. Phase 0 only exposes device initialization, see
+/// `blade-graphics/etc/d3d12.md`.
+#[cfg(all(windows, feature = "d3d12"))]
+pub mod d3d12;
+
 mod internal;
 mod shader;
 pub mod traits;
