@@ -18,9 +18,13 @@ use std::cell::Cell;
 use std::fmt;
 use std::ptr;
 
+pub mod shader;
+
+pub use shader::ShaderCompiler;
+
 use windows::core::{Error as WinError, Interface, PCWSTR};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
-use windows::Win32::Graphics::Direct3D::{D3D_FEATURE_LEVEL, D3D_FEATURE_LEVEL_12_0};
+use windows::Win32::Graphics::Direct3D::{D3D_FEATURE_LEVEL, D3D_FEATURE_LEVEL_12_0, ID3DBlob};
 use windows::Win32::Graphics::Direct3D12::{
     D3D12CreateDevice, D3D12GetDebugInterface, D3D12_COMMAND_LIST_TYPE_DIRECT,
     D3D12_COMMAND_QUEUE_DESC, D3D12_COMMAND_QUEUE_FLAG_NONE, D3D12_COMMAND_QUEUE_PRIORITY_NORMAL,
@@ -63,6 +67,16 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_TEXTURE_COPY_LOCATION_0, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
     D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, D3D12_TEXTURE_LAYOUT_UNKNOWN,
     D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_UAV_DIMENSION_BUFFER,
+    D3D12_COMPUTE_PIPELINE_STATE_DESC, D3D12_CACHED_PIPELINE_STATE, D3D12_DESCRIPTOR_RANGE,
+    D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND, D3D12_DESCRIPTOR_RANGE_TYPE,
+    D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER,
+    D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
+    D3D12_PIPELINE_STATE_FLAG_NONE, D3D12_RESOURCE_BARRIER_TYPE_UAV, D3D12_RESOURCE_UAV_BARRIER,
+    D3D12_ROOT_DESCRIPTOR_TABLE, D3D12_ROOT_PARAMETER, D3D12_ROOT_PARAMETER_0,
+    D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE, D3D12_ROOT_SIGNATURE_DESC,
+    D3D12_ROOT_SIGNATURE_FLAG_NONE, D3D12_SHADER_BYTECODE, D3D12_SHADER_VISIBILITY_ALL,
+    D3D12SerializeRootSignature,
+    D3D_ROOT_SIGNATURE_VERSION_1_0, ID3D12PipelineState, ID3D12RootSignature,
     D3D12_UNORDERED_ACCESS_VIEW_DESC, D3D12_UNORDERED_ACCESS_VIEW_DESC_0, ID3D12DescriptorHeap,
 };
 use windows::Win32::System::Threading::{CreateEventW, INFINITE, WaitForSingleObject};
@@ -162,6 +176,12 @@ pub enum Error {
     /// The call was made in a state that does not allow it (e.g. recording on a
     /// closed command list, or writing to a non-upload buffer).
     InvalidState(&'static str),
+    /// A shader failed to compile; the payload holds the DXC diagnostics.
+    ShaderCompile(String),
+    /// The DXC toolchain (`dxcompiler.dll`) is missing or unusable.
+    ShaderToolchain(String),
+    /// Root signature serialization failed; the payload holds the diagnostics.
+    RootSignature(String),
     /// A DXGI/D3D12 call failed.
     Windows(WinError),
 }
@@ -174,6 +194,13 @@ impl fmt::Display for Error {
                 f.write_str("no adapter supports a feature level 12_0 D3D12 device")
             }
             Self::InvalidState(reason) => write!(f, "invalid D3D12 state: {reason}"),
+            Self::ShaderCompile(diagnostics) => {
+                write!(f, "shader compilation failed:\n{diagnostics}")
+            }
+            Self::ShaderToolchain(reason) => write!(f, "DXC toolchain unavailable: {reason}"),
+            Self::RootSignature(diagnostics) => {
+                write!(f, "root signature serialization failed:\n{diagnostics}")
+            }
             Self::Windows(err) => write!(f, "D3D12 call failed: {err}"),
         }
     }
@@ -1282,6 +1309,247 @@ impl Device {
     }
 }
 
+/// Kind of descriptor range in a root signature.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DescriptorRangeKind {
+    Cbv,
+    Srv,
+    Uav,
+    Sampler,
+}
+
+impl DescriptorRangeKind {
+    fn to_d3d12(self) -> D3D12_DESCRIPTOR_RANGE_TYPE {
+        match self {
+            Self::Cbv => D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
+            Self::Srv => D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+            Self::Uav => D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
+            Self::Sampler => D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER,
+        }
+    }
+}
+
+/// One descriptor table in a [`RootSignature`].
+#[derive(Clone, Copy, Debug)]
+pub struct RootDescriptorTable {
+    pub kind: DescriptorRangeKind,
+    pub count: u32,
+    pub base_shader_register: u32,
+}
+
+/// A serialized `ID3D12RootSignature`.
+pub struct RootSignature {
+    raw: ID3D12RootSignature,
+}
+
+/// A compute pipeline state and the root signature it was created with.
+pub struct ComputePipeline {
+    raw: ID3D12PipelineState,
+    root_signature: RootSignature,
+}
+
+impl ComputePipeline {
+    pub fn root_signature(&self) -> &RootSignature {
+        &self.root_signature
+    }
+}
+
+impl Device {
+    /// Creates a structured buffer UAV over the whole buffer.
+    pub fn create_buffer_uav_structured(
+        &self,
+        heap: &DescriptorHeap,
+        buffer: &Buffer,
+        structure_byte_stride: u32,
+    ) -> Result<DescriptorRange, Error> {
+        self.ensure_heap_type(heap, DescriptorHeapType::CbvSrvUav)?;
+        if !buffer.allows_unordered_access() {
+            return Err(Error::InvalidState(
+                "buffer needs BufferDesc::with_unordered_access() for UAV views",
+            ));
+        }
+        if structure_byte_stride == 0 {
+            return Err(Error::InvalidState("structured buffer stride must be non-zero"));
+        }
+        let desc = D3D12_UNORDERED_ACCESS_VIEW_DESC {
+            Format: DXGI_FORMAT_UNKNOWN,
+            ViewDimension: D3D12_UAV_DIMENSION_BUFFER,
+            Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
+                Buffer: D3D12_BUFFER_UAV {
+                    FirstElement: 0,
+                    NumElements: (buffer.size() / structure_byte_stride as u64) as u32,
+                    StructureByteStride: structure_byte_stride,
+                    CounterOffsetInBytes: 0,
+                    Flags: D3D12_BUFFER_UAV_FLAGS(0),
+                },
+            },
+        };
+        let range = heap.allocate_one()?;
+        unsafe {
+            self.raw.CreateUnorderedAccessView(
+                &buffer.resource,
+                None,
+                Some(&desc),
+                heap.cpu_handle(range.start),
+            );
+        }
+        Ok(range)
+    }
+
+    /// Builds a compute root signature: one descriptor table per entry, no root
+    /// constants or static samplers yet.
+    pub fn create_compute_root_signature(
+        &self,
+        tables: &[RootDescriptorTable],
+    ) -> Result<RootSignature, Error> {
+        let ranges: Vec<D3D12_DESCRIPTOR_RANGE> = tables
+            .iter()
+            .map(|table| D3D12_DESCRIPTOR_RANGE {
+                RangeType: table.kind.to_d3d12(),
+                NumDescriptors: table.count,
+                BaseShaderRegister: table.base_shader_register,
+                RegisterSpace: 0,
+                OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
+            })
+            .collect();
+        let parameters: Vec<D3D12_ROOT_PARAMETER> = ranges
+            .iter()
+            .map(|range| D3D12_ROOT_PARAMETER {
+                ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+                Anonymous: D3D12_ROOT_PARAMETER_0 {
+                    DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
+                        NumDescriptorRanges: 1,
+                        pDescriptorRanges: range,
+                    },
+                },
+                ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+            })
+            .collect();
+        let desc = D3D12_ROOT_SIGNATURE_DESC {
+            NumParameters: parameters.len() as u32,
+            pParameters: parameters.as_ptr(),
+            NumStaticSamplers: 0,
+            pStaticSamplers: ptr::null(),
+            Flags: D3D12_ROOT_SIGNATURE_FLAG_NONE,
+        };
+
+        let mut blob: Option<ID3DBlob> = None;
+        let mut error_blob: Option<ID3DBlob> = None;
+        unsafe {
+            D3D12SerializeRootSignature(
+                &desc,
+                D3D_ROOT_SIGNATURE_VERSION_1_0,
+                &mut blob,
+                Some(&mut error_blob),
+            )?;
+        }
+        let Some(blob) = blob else {
+            let diagnostics = error_blob
+                .map(|blob| blob_to_string(&blob))
+                .unwrap_or_else(|| "no diagnostics".to_string());
+            return Err(Error::RootSignature(diagnostics));
+        };
+
+        let data = unsafe { blob.GetBufferPointer() } as *const u8;
+        let size = unsafe { blob.GetBufferSize() };
+        let bytes = unsafe { std::slice::from_raw_parts(data, size) };
+        let raw: ID3D12RootSignature = unsafe { self.raw.CreateRootSignature(0, bytes)? };
+        Ok(RootSignature { raw })
+    }
+
+    /// Builds a compute pipeline state from a DXIL blob and its root signature.
+    pub fn create_compute_pipeline(
+        &self,
+        dxil: &[u8],
+        root_signature: &RootSignature,
+    ) -> Result<ComputePipeline, Error> {
+        if dxil.is_empty() {
+            return Err(Error::InvalidState("compute shader bytecode is empty"));
+        }
+        let desc = D3D12_COMPUTE_PIPELINE_STATE_DESC {
+            pRootSignature: std::mem::ManuallyDrop::new(Some(root_signature.raw.clone())),
+            CS: D3D12_SHADER_BYTECODE {
+                pShaderBytecode: dxil.as_ptr() as *const core::ffi::c_void,
+                BytecodeLength: dxil.len(),
+            },
+            NodeMask: 0,
+            CachedPSO: D3D12_CACHED_PIPELINE_STATE::default(),
+            Flags: D3D12_PIPELINE_STATE_FLAG_NONE,
+        };
+        let raw: ID3D12PipelineState = unsafe { self.raw.CreateComputePipelineState(&desc)? };
+        Ok(ComputePipeline {
+            raw,
+            root_signature: RootSignature {
+                raw: root_signature.raw.clone(),
+            },
+        })
+    }
+}
+
+impl CommandEncoder {
+    /// Binds a shader-visible descriptor heap for the root tables that follow.
+    pub fn set_descriptor_heap(&mut self, heap: &DescriptorHeap) {
+        unsafe {
+            self.list.SetDescriptorHeaps(&[Some(heap.heap.clone())]);
+        }
+    }
+
+    /// Binds a compute pipeline; its root signature is set along with it.
+    pub fn set_compute_pipeline(&mut self, pipeline: &ComputePipeline) {
+        unsafe {
+            self.list.SetComputeRootSignature(&pipeline.root_signature.raw);
+            self.list.SetPipelineState(&pipeline.raw);
+        }
+    }
+
+    /// Binds a descriptor table of `heap` to root parameter `root_index`.
+    pub fn set_compute_descriptor_table(
+        &mut self,
+        root_index: u32,
+        heap: &DescriptorHeap,
+        range: DescriptorRange,
+    ) {
+        unsafe {
+            self.list
+                .SetComputeRootDescriptorTable(root_index, heap.range_gpu_handle(range));
+        }
+    }
+
+    /// Records a compute dispatch of `groups` thread groups.
+    pub fn dispatch(&mut self, groups: [u32; 3]) {
+        unsafe {
+            self.list
+                .Dispatch(groups[0], groups[1], groups[2]);
+        }
+    }
+
+    /// Records a UAV barrier so UAV writes are visible to later reads/copies.
+    pub fn uav_barrier(&mut self, buffer: &Buffer) {
+        let barrier = D3D12_RESOURCE_BARRIER {
+            Type: D3D12_RESOURCE_BARRIER_TYPE_UAV,
+            Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
+            Anonymous: D3D12_RESOURCE_BARRIER_0 {
+                UAV: std::mem::ManuallyDrop::new(D3D12_RESOURCE_UAV_BARRIER {
+                    pResource: std::mem::ManuallyDrop::new(Some(buffer.resource.clone())),
+                }),
+            },
+        };
+        unsafe {
+            self.list.ResourceBarrier(&[barrier]);
+        }
+    }
+}
+
+fn blob_to_string(blob: &ID3DBlob) -> String {
+    let data = unsafe { blob.GetBufferPointer() } as *const u8;
+    let size = unsafe { blob.GetBufferSize() };
+    if data.is_null() || size == 0 {
+        return String::new();
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(data, size) };
+    String::from_utf8_lossy(bytes).trim_end().to_string()
+}
+
 /// Result of a successful [`init`] call.
 pub struct Init {
     pub factory: IDXGIFactory6,
@@ -1647,6 +1915,95 @@ mod tests {
         assert!(device
             .create_sampler(&view_heap, &SamplerDesc::default())
             .is_err());
+    }
+
+    #[test]
+    fn dxc_compiles_compute_shader() {
+        let compiler = match ShaderCompiler::load() {
+            Ok(compiler) => compiler,
+            Err(err) => {
+                // DXC ships out of band; tests skip when it is not installed.
+                eprintln!("skipping DXC test: {err}");
+                return;
+            }
+        };
+
+        let dxil = compiler
+            .compile_hlsl(shader::TRIVIAL_COMPUTE_HLSL, "main", "cs_6_0")
+            .expect("compile the trivial compute shader");
+        assert!(dxil.len() > 4, "DXIL blob is suspiciously small");
+        assert_eq!(&dxil[..4], b"DXBC", "DXIL container magic missing");
+
+        // Broken HLSL reports the diagnostics instead of an opaque error.
+        let err = compiler
+            .compile_hlsl("this is not hlsl", "main", "cs_6_0")
+            .expect_err("invalid HLSL must not compile");
+        match err {
+            Error::ShaderCompile(diagnostics) => {
+                assert!(!diagnostics.is_empty(), "compile error had no diagnostics")
+            }
+            other => panic!("expected Error::ShaderCompile, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compute_shader_writes_uav_buffer() {
+        let init = init_headless();
+        let device = &init.device;
+        let compiler = match ShaderCompiler::load() {
+            Ok(compiler) => compiler,
+            Err(err) => {
+                eprintln!("skipping compute test: {err}");
+                return;
+            }
+        };
+
+        let dxil = compiler
+            .compile_hlsl(shader::TRIVIAL_COMPUTE_HLSL, "main", "cs_6_0")
+            .expect("compile compute shader");
+        let root = device
+            .create_compute_root_signature(&[RootDescriptorTable {
+                kind: DescriptorRangeKind::Uav,
+                count: 1,
+                base_shader_register: 0,
+            }])
+            .expect("root signature");
+        let pipeline = device
+            .create_compute_pipeline(&dxil, &root)
+            .expect("compute pipeline");
+
+        let count = 64u32;
+        let byte_size = count as u64 * 4;
+        let gpu = device
+            .create_buffer(BufferDesc::new(byte_size, Memory::Device).with_unordered_access())
+            .expect("uav buffer");
+        let readback = device
+            .create_buffer(BufferDesc::new(byte_size, Memory::Readback))
+            .expect("readback buffer");
+        let heap = DescriptorHeap::new(device, DescriptorHeapType::CbvSrvUav, 4).expect("heap");
+        let uav = device
+            .create_buffer_uav_structured(&heap, &gpu, 4)
+            .expect("uav view");
+
+        let mut encoder = device.record().expect("encoder");
+        encoder.transition_buffer(&gpu, ResourceState::UnorderedAccess);
+        encoder.set_descriptor_heap(&heap);
+        encoder.set_compute_pipeline(&pipeline);
+        encoder.set_compute_descriptor_table(0, &heap, uav);
+        encoder.dispatch([1, 1, 1]);
+        encoder.uav_barrier(&gpu);
+        encoder.transition_buffer(&gpu, ResourceState::CopySource);
+        encoder.copy_buffer(&readback, 0, &gpu, 0, byte_size);
+        let sp = device.submit(encoder).expect("submit");
+        device.wait(sp).expect("wait");
+        device.check_device().expect("device alive after dispatch");
+
+        let bytes = readback.read().expect("readback");
+        let values: Vec<u32> = bytes[..byte_size as usize]
+            .chunks_exact(4)
+            .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .collect();
+        assert_eq!(values, (0..count).collect::<Vec<_>>());
     }
 
     #[test]
