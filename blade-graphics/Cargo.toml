@@ -14,9 +14,14 @@ repository = "https://github.com/kvark/blade"
 name = "d3d12-probe"
 required-features = ["d3d12"]
 
+[[example]]
+name = "d3d12-smoke"
+required-features = ["d3d12"]
+
 [features]
-# Direct3D 12 backend (Windows only). Phase 0 only initializes the device,
-# see `etc/d3d12.md` for the design and the phased plan.
+# Direct3D 12 backend (Windows only). The device layer initializes the device,
+# creates buffers and submits copies; see `etc/d3d12.md` for the design and the
+# phased plan.
 d3d12 = ["dep:windows"]
 
 [dependencies]
@@ -33,6 +38,8 @@ once_cell = "1"
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", optional = true, features = [
     "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D12",
     "Win32_Graphics_Dxgi",
