@@ -22,62 +22,73 @@ pub mod shader;
 
 pub use shader::ShaderCompiler;
 
-use windows::core::{Error as WinError, Interface, PCWSTR};
-use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
-use windows::Win32::Graphics::Direct3D::{D3D_FEATURE_LEVEL, D3D_FEATURE_LEVEL_12_0, ID3DBlob};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, RECT, WAIT_OBJECT_0};
+use windows::Win32::Graphics::Direct3D::{
+    D3D_FEATURE_LEVEL, D3D_FEATURE_LEVEL_12_0, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST, ID3DBlob,
+};
 use windows::Win32::Graphics::Direct3D12::{
-    D3D12CreateDevice, D3D12GetDebugInterface, D3D12_COMMAND_LIST_TYPE_DIRECT,
-    D3D12_COMMAND_QUEUE_DESC, D3D12_COMMAND_QUEUE_FLAG_NONE, D3D12_COMMAND_QUEUE_PRIORITY_NORMAL,
-    D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_FENCE_FLAG_NONE, D3D12_HEAP_FLAG_NONE,
-    D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT, D3D12_HEAP_TYPE_READBACK,
+    D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC, D3D12_COMMAND_QUEUE_FLAG_NONE,
+    D3D12_COMMAND_QUEUE_PRIORITY_NORMAL, D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_FENCE_FLAG_NONE,
+    D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT, D3D12_HEAP_TYPE_READBACK,
     D3D12_HEAP_TYPE_UPLOAD, D3D12_MEMORY_POOL_UNKNOWN, D3D12_RANGE, D3D12_RESOURCE_BARRIER,
     D3D12_RESOURCE_BARRIER_0, D3D12_RESOURCE_BARRIER_FLAG_NONE,
     D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_DESC, D3D12_RESOURCE_DIMENSION_BUFFER,
     D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST,
     D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATES,
-    D3D12_RESOURCE_TRANSITION_BARRIER, D3D12_TEXTURE_LAYOUT_ROW_MAJOR, ID3D12CommandAllocator,
-    ID3D12CommandList, ID3D12CommandQueue, ID3D12Debug, ID3D12Device, ID3D12Fence,
-    ID3D12GraphicsCommandList, ID3D12Resource,
-};
-use windows::Win32::Graphics::Dxgi::{
-    CreateDXGIFactory2, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_CREATE_FACTORY_FLAGS, DXGI_ERROR_NOT_FOUND,
-    DXGI_GPU_PREFERENCE, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IDXGIAdapter1, IDXGIDevice,
-    IDXGIFactory6,
+    D3D12_RESOURCE_TRANSITION_BARRIER, D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12CreateDevice,
+    D3D12GetDebugInterface, ID3D12CommandAllocator, ID3D12CommandList, ID3D12CommandQueue,
+    ID3D12Debug, ID3D12Device, ID3D12Fence, ID3D12GraphicsCommandList, ID3D12Resource,
 };
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
+use windows::Win32::Graphics::Dxgi::{
+    CreateDXGIFactory2, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_CREATE_FACTORY_FLAGS,
+    DXGI_ERROR_NOT_FOUND, DXGI_GPU_PREFERENCE, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IDXGIAdapter1,
+    IDXGIDevice, IDXGIFactory6,
+};
+use windows::core::{Error as WinError, Interface, PCWSTR};
 
 // Phase 2: textures, descriptors and samplers.
-pub use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM,
-    DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R16G16B16A16_FLOAT,
-    DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32_UINT, DXGI_FORMAT_R32G32B32A32_FLOAT,
-};
 use windows::Win32::Graphics::Direct3D12::{
-    D3D12_BUFFER_SRV, D3D12_BUFFER_SRV_FLAGS, D3D12_BUFFER_UAV, D3D12_BUFFER_UAV_FLAGS,
-    D3D12_COMPARISON_FUNC_NEVER, D3D12_CONSTANT_BUFFER_VIEW_DESC, D3D12_CPU_DESCRIPTOR_HANDLE,
-    D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING, D3D12_DESCRIPTOR_HEAP_DESC,
+    D3D_ROOT_SIGNATURE_VERSION_1_0, D3D12_BLEND_DESC, D3D12_BLEND_ONE, D3D12_BLEND_OP_ADD,
+    D3D12_BLEND_ZERO, D3D12_BUFFER_SRV, D3D12_BUFFER_SRV_FLAGS, D3D12_BUFFER_UAV,
+    D3D12_BUFFER_UAV_FLAGS, D3D12_CACHED_PIPELINE_STATE, D3D12_COLOR_WRITE_ENABLE_ALL,
+    D3D12_COMPARISON_FUNC_ALWAYS, D3D12_COMPARISON_FUNC_NEVER, D3D12_COMPUTE_PIPELINE_STATE_DESC,
+    D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF, D3D12_CONSTANT_BUFFER_VIEW_DESC,
+    D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_CULL_MODE_NONE, D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+    D3D12_DEPTH_STENCIL_DESC, D3D12_DEPTH_STENCILOP_DESC, D3D12_DEPTH_WRITE_MASK_ZERO,
+    D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
     D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, D3D12_DESCRIPTOR_HEAP_TYPE,
-    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, D3D12_FILTER,
-    D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_GPU_DESCRIPTOR_HANDLE,
-    D3D12_PLACED_SUBRESOURCE_FOOTPRINT, D3D12_RESOURCE_DIMENSION_TEXTURE2D,
-    D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-    D3D12_SAMPLER_DESC, D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_SHADER_RESOURCE_VIEW_DESC_0,
-    D3D12_SRV_DIMENSION_BUFFER, D3D12_SRV_DIMENSION_TEXTURE2D, D3D12_TEX2D_SRV,
-    D3D12_TEXTURE_ADDRESS_MODE, D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_COPY_LOCATION,
-    D3D12_TEXTURE_COPY_LOCATION_0, D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
-    D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, D3D12_TEXTURE_LAYOUT_UNKNOWN,
-    D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_UAV_DIMENSION_BUFFER,
-    D3D12_COMPUTE_PIPELINE_STATE_DESC, D3D12_CACHED_PIPELINE_STATE, D3D12_DESCRIPTOR_RANGE,
+    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
+    D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, D3D12_DESCRIPTOR_RANGE,
     D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND, D3D12_DESCRIPTOR_RANGE_TYPE,
     D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER,
-    D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_TYPE_UAV,
-    D3D12_PIPELINE_STATE_FLAG_NONE, D3D12_RESOURCE_BARRIER_TYPE_UAV, D3D12_RESOURCE_UAV_BARRIER,
-    D3D12_ROOT_DESCRIPTOR_TABLE, D3D12_ROOT_PARAMETER, D3D12_ROOT_PARAMETER_0,
+    D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_TYPE_UAV, D3D12_FILL_MODE_SOLID,
+    D3D12_FILTER, D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_GPU_DESCRIPTOR_HANDLE,
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC, D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED,
+    D3D12_INPUT_LAYOUT_DESC, D3D12_LOGIC_OP_NOOP, D3D12_PIPELINE_STATE_FLAG_NONE,
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+    D3D12_RASTERIZER_DESC, D3D12_RENDER_TARGET_BLEND_DESC, D3D12_RESOURCE_BARRIER_TYPE_UAV,
+    D3D12_RESOURCE_DIMENSION_TEXTURE2D, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+    D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE,
+    D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+    D3D12_RESOURCE_UAV_BARRIER, D3D12_ROOT_CONSTANTS, D3D12_ROOT_DESCRIPTOR_TABLE,
+    D3D12_ROOT_PARAMETER, D3D12_ROOT_PARAMETER_0, D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
     D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE, D3D12_ROOT_SIGNATURE_DESC,
-    D3D12_ROOT_SIGNATURE_FLAG_NONE, D3D12_SHADER_BYTECODE, D3D12_SHADER_VISIBILITY_ALL,
-    D3D12SerializeRootSignature,
-    D3D_ROOT_SIGNATURE_VERSION_1_0, ID3D12PipelineState, ID3D12RootSignature,
-    D3D12_UNORDERED_ACCESS_VIEW_DESC, D3D12_UNORDERED_ACCESS_VIEW_DESC_0, ID3D12DescriptorHeap,
+    D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, D3D12_ROOT_SIGNATURE_FLAG_NONE,
+    D3D12_ROOT_SIGNATURE_FLAGS, D3D12_SAMPLER_DESC, D3D12_SHADER_BYTECODE,
+    D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_SHADER_RESOURCE_VIEW_DESC_0,
+    D3D12_SHADER_VISIBILITY_ALL, D3D12_SRV_DIMENSION_BUFFER, D3D12_SRV_DIMENSION_TEXTURE2D,
+    D3D12_STREAM_OUTPUT_DESC, D3D12_TEX2D_SRV, D3D12_TEXTURE_ADDRESS_MODE,
+    D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_COPY_LOCATION, D3D12_TEXTURE_COPY_LOCATION_0,
+    D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+    D3D12_TEXTURE_LAYOUT_UNKNOWN, D3D12_UAV_DIMENSION_BUFFER, D3D12_UNORDERED_ACCESS_VIEW_DESC,
+    D3D12_UNORDERED_ACCESS_VIEW_DESC_0, D3D12_VIEWPORT, D3D12SerializeRootSignature,
+    ID3D12DescriptorHeap, ID3D12PipelineState, ID3D12RootSignature,
+};
+pub use windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM,
+    DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R32_FLOAT,
+    DXGI_FORMAT_R32_UINT, DXGI_FORMAT_R32G32B32A32_FLOAT,
 };
 use windows::Win32::System::Threading::{CreateEventW, INFINITE, WaitForSingleObject};
 
@@ -239,6 +250,8 @@ pub enum ResourceState {
     ShaderRead,
     /// Written by shaders through a UAV.
     UnorderedAccess,
+    /// Written by draw calls as a render target.
+    RenderTarget,
 }
 
 impl ResourceState {
@@ -250,6 +263,7 @@ impl ResourceState {
             Self::GenericRead => D3D12_RESOURCE_STATE_GENERIC_READ,
             Self::ShaderRead => D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE,
             Self::UnorderedAccess => D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+            Self::RenderTarget => D3D12_RESOURCE_STATE_RENDER_TARGET,
         }
     }
 }
@@ -390,7 +404,10 @@ impl Buffer {
         }
         let size = self.size as usize;
         let mut data = vec![0u8; size];
-        let range = D3D12_RANGE { Begin: 0, End: size };
+        let range = D3D12_RANGE {
+            Begin: 0,
+            End: size,
+        };
         unsafe {
             let mut mapped: *mut core::ffi::c_void = ptr::null_mut();
             self.resource.Map(0, Some(&range), Some(&mut mapped))?;
@@ -518,7 +535,9 @@ impl Device {
                 &mut resource,
             )?;
         }
-        let resource = resource.ok_or(Error::InvalidState("CreateCommittedResource returned no resource"))?;
+        let resource = resource.ok_or(Error::InvalidState(
+            "CreateCommittedResource returned no resource",
+        ))?;
         Ok(Buffer {
             resource,
             size,
@@ -533,10 +552,13 @@ impl Device {
     /// A new allocator per encoder keeps the phase 1 model trivial; the
     /// allocator ring for transient frames arrives with the HAL wiring.
     pub fn record(&self) -> Result<CommandEncoder, Error> {
-        let allocator: ID3D12CommandAllocator =
-            unsafe { self.raw.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT)? };
+        let allocator: ID3D12CommandAllocator = unsafe {
+            self.raw
+                .CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT)?
+        };
         let list: ID3D12GraphicsCommandList = unsafe {
-            self.raw.CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &allocator, None)?
+            self.raw
+                .CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &allocator, None)?
         };
         Ok(CommandEncoder {
             allocator,
@@ -554,8 +576,7 @@ impl Device {
         unsafe { encoder.list.Close()? };
         let command_list: ID3D12CommandList = encoder.list.cast()?;
         unsafe {
-            self.queue
-                .ExecuteCommandLists(&[Some(command_list)]);
+            self.queue.ExecuteCommandLists(&[Some(command_list)]);
             let value = self.next_fence_value.get() + 1;
             self.next_fence_value.set(value);
             self.queue.Signal(&self.fence, value)?;
@@ -570,10 +591,13 @@ impl Device {
     /// Blocks the CPU until the GPU reaches `sp`.
     pub fn wait(&self, sp: SyncPoint) -> Result<(), Error> {
         unsafe {
-            self.fence.SetEventOnCompletion(sp.value, self.fence_event)?;
+            self.fence
+                .SetEventOnCompletion(sp.value, self.fence_event)?;
             let result = WaitForSingleObject(self.fence_event, INFINITE);
             if result != WAIT_OBJECT_0 {
-                return Err(Error::InvalidState("fence wait did not return WAIT_OBJECT_0"));
+                return Err(Error::InvalidState(
+                    "fence wait did not return WAIT_OBJECT_0",
+                ));
             }
         }
         Ok(())
@@ -669,13 +693,8 @@ impl CommandEncoder {
         size: u64,
     ) {
         unsafe {
-            self.list.CopyBufferRegion(
-                &dst.resource,
-                dst_offset,
-                &src.resource,
-                src_offset,
-                size,
-            );
+            self.list
+                .CopyBufferRegion(&dst.resource, dst_offset, &src.resource, src_offset, size);
         }
     }
 
@@ -693,7 +712,9 @@ impl CommandEncoder {
         let dst = D3D12_TEXTURE_COPY_LOCATION {
             pResource: std::mem::ManuallyDrop::new(Some(texture.resource.clone())),
             Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-            Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 { SubresourceIndex: 0 },
+            Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                SubresourceIndex: 0,
+            },
         };
         let src = D3D12_TEXTURE_COPY_LOCATION {
             pResource: std::mem::ManuallyDrop::new(Some(buffer.resource.clone())),
@@ -727,7 +748,9 @@ impl CommandEncoder {
         let src = D3D12_TEXTURE_COPY_LOCATION {
             pResource: std::mem::ManuallyDrop::new(Some(texture.resource.clone())),
             Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-            Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 { SubresourceIndex: 0 },
+            Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                SubresourceIndex: 0,
+            },
         };
         unsafe {
             self.list.CopyTextureRegion(&dst, 0, 0, 0, &src, None);
@@ -742,6 +765,10 @@ pub struct TextureDesc {
     pub height: u32,
     pub mip_levels: u16,
     pub format: DXGI_FORMAT,
+    /// Allow render-target views. D3D12 requires the resource flag
+    /// `D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET`; creating an RTV for a texture
+    /// without it removes the device.
+    pub render_target: bool,
 }
 
 impl TextureDesc {
@@ -751,11 +778,17 @@ impl TextureDesc {
             height,
             mip_levels: 1,
             format,
+            render_target: false,
         }
     }
 
     pub fn with_mips(mut self, mip_levels: u16) -> Self {
         self.mip_levels = mip_levels;
+        self
+    }
+
+    pub fn with_render_target(mut self) -> Self {
+        self.render_target = true;
         self
     }
 }
@@ -844,7 +877,11 @@ impl Device {
                 Quality: 0,
             },
             Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
-            Flags: D3D12_RESOURCE_FLAG_NONE,
+            Flags: if desc.render_target {
+                D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET
+            } else {
+                D3D12_RESOURCE_FLAG_NONE
+            },
         };
         let mut resource: Option<ID3D12Resource> = None;
         unsafe {
@@ -857,8 +894,9 @@ impl Device {
                 &mut resource,
             )?;
         }
-        let resource = resource
-            .ok_or(Error::InvalidState("CreateCommittedResource returned no texture"))?;
+        let resource = resource.ok_or(Error::InvalidState(
+            "CreateCommittedResource returned no texture",
+        ))?;
         Ok(Texture {
             resource,
             desc,
@@ -960,6 +998,8 @@ impl Device {
 pub enum DescriptorHeapType {
     CbvSrvUav,
     Sampler,
+    /// Render-target views; CPU-only, never shader visible.
+    Rtv,
 }
 
 impl DescriptorHeapType {
@@ -967,7 +1007,12 @@ impl DescriptorHeapType {
         match self {
             Self::CbvSrvUav => D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
             Self::Sampler => D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
+            Self::Rtv => D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
         }
+    }
+
+    fn shader_visible(self) -> bool {
+        matches!(self, Self::CbvSrvUav | Self::Sampler)
     }
 }
 
@@ -987,12 +1032,18 @@ pub struct DescriptorHeap {
 impl DescriptorHeap {
     pub fn new(device: &Device, ty: DescriptorHeapType, capacity: u32) -> Result<Self, Error> {
         if capacity == 0 {
-            return Err(Error::InvalidState("descriptor heap capacity must be non-zero"));
+            return Err(Error::InvalidState(
+                "descriptor heap capacity must be non-zero",
+            ));
         }
         let desc = D3D12_DESCRIPTOR_HEAP_DESC {
             Type: ty.to_d3d12(),
             NumDescriptors: capacity,
-            Flags: D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
+            Flags: if ty.shader_visible() {
+                D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE
+            } else {
+                D3D12_DESCRIPTOR_HEAP_FLAG_NONE
+            },
             NodeMask: 0,
         };
         let heap: ID3D12DescriptorHeap = unsafe { device.raw.CreateDescriptorHeap(&desc)? };
@@ -1098,7 +1149,11 @@ impl Default for SamplerDesc {
 }
 
 impl Device {
-    fn ensure_heap_type(&self, heap: &DescriptorHeap, expected: DescriptorHeapType) -> Result<(), Error> {
+    fn ensure_heap_type(
+        &self,
+        heap: &DescriptorHeap,
+        expected: DescriptorHeapType,
+    ) -> Result<(), Error> {
         if heap.ty() != expected {
             return Err(Error::InvalidState(
                 "descriptor heap type does not match the view being created",
@@ -1123,7 +1178,9 @@ impl Device {
             ));
         }
         if offset + size as u64 > buffer.size() {
-            return Err(Error::InvalidState("constant buffer view exceeds the buffer"));
+            return Err(Error::InvalidState(
+                "constant buffer view exceeds the buffer",
+            ));
         }
         let desc = D3D12_CONSTANT_BUFFER_VIEW_DESC {
             BufferLocation: buffer.gpu_address() + offset,
@@ -1131,7 +1188,8 @@ impl Device {
         };
         let range = heap.allocate_one()?;
         unsafe {
-            self.raw.CreateConstantBufferView(Some(&desc), heap.cpu_handle(range.start));
+            self.raw
+                .CreateConstantBufferView(Some(&desc), heap.cpu_handle(range.start));
         }
         Ok(range)
     }
@@ -1180,7 +1238,9 @@ impl Device {
     ) -> Result<DescriptorRange, Error> {
         self.ensure_heap_type(heap, DescriptorHeapType::CbvSrvUav)?;
         if structure_byte_stride == 0 {
-            return Err(Error::InvalidState("structured buffer stride must be non-zero"));
+            return Err(Error::InvalidState(
+                "structured buffer stride must be non-zero",
+            ));
         }
         let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
             Format: DXGI_FORMAT_UNKNOWN,
@@ -1337,6 +1397,35 @@ pub struct RootDescriptorTable {
     pub base_shader_register: u32,
 }
 
+/// A root parameter in a graphics root signature.
+#[derive(Clone, Copy, Debug)]
+pub enum RootParameter {
+    /// A descriptor table (one range).
+    DescriptorTable(RootDescriptorTable),
+    /// 32-bit root constants, e.g. `{ shader_register: 0, count: 4 }` for a
+    /// `float4` at `b0`.
+    Constants { shader_register: u32, count: u32 },
+}
+
+/// A graphics pipeline state and the root signature it was created with.
+pub struct RenderPipeline {
+    raw: ID3D12PipelineState,
+    root_signature: RootSignature,
+}
+
+impl RenderPipeline {
+    pub fn root_signature(&self) -> &RootSignature {
+        &self.root_signature
+    }
+}
+
+/// Description of a minimal render pipeline.
+pub struct RenderPipelineDesc<'a> {
+    pub vertex_dxil: &'a [u8],
+    pub pixel_dxil: &'a [u8],
+    pub color_format: DXGI_FORMAT,
+}
+
 /// A serialized `ID3D12RootSignature`.
 pub struct RootSignature {
     raw: ID3D12RootSignature,
@@ -1369,7 +1458,9 @@ impl Device {
             ));
         }
         if structure_byte_stride == 0 {
-            return Err(Error::InvalidState("structured buffer stride must be non-zero"));
+            return Err(Error::InvalidState(
+                "structured buffer stride must be non-zero",
+            ));
         }
         let desc = D3D12_UNORDERED_ACCESS_VIEW_DESC {
             Format: DXGI_FORMAT_UNKNOWN,
@@ -1402,35 +1493,84 @@ impl Device {
         &self,
         tables: &[RootDescriptorTable],
     ) -> Result<RootSignature, Error> {
-        let ranges: Vec<D3D12_DESCRIPTOR_RANGE> = tables
+        let parameters: Vec<RootParameter> = tables
             .iter()
-            .map(|table| D3D12_DESCRIPTOR_RANGE {
-                RangeType: table.kind.to_d3d12(),
-                NumDescriptors: table.count,
-                BaseShaderRegister: table.base_shader_register,
-                RegisterSpace: 0,
-                OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
+            .map(|table| RootParameter::DescriptorTable(*table))
+            .collect();
+        self.build_root_signature(&parameters, D3D12_ROOT_SIGNATURE_FLAG_NONE)
+    }
+
+    /// Builds a graphics root signature from descriptor tables and 32-bit root
+    /// constants.
+    pub fn create_graphics_root_signature(
+        &self,
+        parameters: &[RootParameter],
+    ) -> Result<RootSignature, Error> {
+        self.build_root_signature(
+            parameters,
+            D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
+        )
+    }
+
+    fn build_root_signature(
+        &self,
+        parameters: &[RootParameter],
+        flags: D3D12_ROOT_SIGNATURE_FLAGS,
+    ) -> Result<RootSignature, Error> {
+        let ranges: Vec<D3D12_DESCRIPTOR_RANGE> = parameters
+            .iter()
+            .filter_map(|parameter| match parameter {
+                RootParameter::DescriptorTable(table) => Some(D3D12_DESCRIPTOR_RANGE {
+                    RangeType: table.kind.to_d3d12(),
+                    NumDescriptors: table.count,
+                    BaseShaderRegister: table.base_shader_register,
+                    RegisterSpace: 0,
+                    OffsetInDescriptorsFromTableStart: D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND,
+                }),
+                RootParameter::Constants { .. } => None,
             })
             .collect();
-        let parameters: Vec<D3D12_ROOT_PARAMETER> = ranges
+
+        let mut range_index = 0;
+        let root_parameters: Vec<D3D12_ROOT_PARAMETER> = parameters
             .iter()
-            .map(|range| D3D12_ROOT_PARAMETER {
-                ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
-                Anonymous: D3D12_ROOT_PARAMETER_0 {
-                    DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
-                        NumDescriptorRanges: 1,
-                        pDescriptorRanges: range,
+            .map(|parameter| match parameter {
+                RootParameter::DescriptorTable(_) => {
+                    let range = &ranges[range_index];
+                    range_index += 1;
+                    D3D12_ROOT_PARAMETER {
+                        ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+                        Anonymous: D3D12_ROOT_PARAMETER_0 {
+                            DescriptorTable: D3D12_ROOT_DESCRIPTOR_TABLE {
+                                NumDescriptorRanges: 1,
+                                pDescriptorRanges: range,
+                            },
+                        },
+                        ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+                    }
+                }
+                RootParameter::Constants {
+                    shader_register,
+                    count,
+                } => D3D12_ROOT_PARAMETER {
+                    ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+                    Anonymous: D3D12_ROOT_PARAMETER_0 {
+                        Constants: D3D12_ROOT_CONSTANTS {
+                            ShaderRegister: *shader_register,
+                            RegisterSpace: 0,
+                            Num32BitValues: *count,
+                        },
                     },
+                    ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
                 },
-                ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
             })
             .collect();
         let desc = D3D12_ROOT_SIGNATURE_DESC {
-            NumParameters: parameters.len() as u32,
-            pParameters: parameters.as_ptr(),
+            NumParameters: root_parameters.len() as u32,
+            pParameters: root_parameters.as_ptr(),
             NumStaticSamplers: 0,
             pStaticSamplers: ptr::null(),
-            Flags: D3D12_ROOT_SIGNATURE_FLAG_NONE,
+            Flags: flags,
         };
 
         let mut blob: Option<ID3DBlob> = None;
@@ -1455,6 +1595,138 @@ impl Device {
         let bytes = unsafe { std::slice::from_raw_parts(data, size) };
         let raw: ID3D12RootSignature = unsafe { self.raw.CreateRootSignature(0, bytes)? };
         Ok(RootSignature { raw })
+    }
+
+    /// Creates a render-target view for `texture` in an RTV heap.
+    pub fn create_render_target_view(
+        &self,
+        heap: &DescriptorHeap,
+        texture: &Texture,
+    ) -> Result<DescriptorRange, Error> {
+        self.ensure_heap_type(heap, DescriptorHeapType::Rtv)?;
+        if !texture.desc().render_target {
+            return Err(Error::InvalidState(
+                "texture needs TextureDesc::with_render_target() for render-target views",
+            ));
+        }
+        let range = heap.allocate_one()?;
+        unsafe {
+            self.raw
+                .CreateRenderTargetView(&texture.resource, None, heap.cpu_handle(range.start));
+        }
+        Ok(range)
+    }
+
+    /// Builds a minimal render pipeline: vertex + pixel DXIL against one color
+    /// target, no input layout (the shader uses `SV_VertexID`), no depth.
+    pub fn create_render_pipeline(
+        &self,
+        desc: &RenderPipelineDesc<'_>,
+        root_signature: &RootSignature,
+    ) -> Result<RenderPipeline, Error> {
+        if desc.vertex_dxil.is_empty() || desc.pixel_dxil.is_empty() {
+            return Err(Error::InvalidState(
+                "render pipeline stages need non-empty bytecode",
+            ));
+        }
+        let shader_bytecode = |data: &[u8]| D3D12_SHADER_BYTECODE {
+            pShaderBytecode: data.as_ptr() as *const core::ffi::c_void,
+            BytecodeLength: data.len(),
+        };
+
+        // D3D12 zeroed state is not "default state": disabled blend still needs a
+        // valid op and a write mask, otherwise nothing reaches the target.
+        let mut blend = D3D12_BLEND_DESC::default();
+        blend.RenderTarget[0] = D3D12_RENDER_TARGET_BLEND_DESC {
+            BlendEnable: false.into(),
+            LogicOpEnable: false.into(),
+            SrcBlend: D3D12_BLEND_ONE,
+            DestBlend: D3D12_BLEND_ZERO,
+            BlendOp: D3D12_BLEND_OP_ADD,
+            SrcBlendAlpha: D3D12_BLEND_ONE,
+            DestBlendAlpha: D3D12_BLEND_ZERO,
+            BlendOpAlpha: D3D12_BLEND_OP_ADD,
+            LogicOp: D3D12_LOGIC_OP_NOOP,
+            RenderTargetWriteMask: D3D12_COLOR_WRITE_ENABLE_ALL.0 as u8,
+        };
+        let rasterizer = D3D12_RASTERIZER_DESC {
+            FillMode: D3D12_FILL_MODE_SOLID,
+            CullMode: D3D12_CULL_MODE_NONE,
+            FrontCounterClockwise: false.into(),
+            DepthBias: 0,
+            DepthBiasClamp: 0.0,
+            SlopeScaledDepthBias: 0.0,
+            DepthClipEnable: true.into(),
+            MultisampleEnable: false.into(),
+            AntialiasedLineEnable: false.into(),
+            ForcedSampleCount: 0,
+            ConservativeRaster: D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF,
+        };
+        let depth_stencil = D3D12_DEPTH_STENCIL_DESC {
+            DepthEnable: false.into(),
+            DepthWriteMask: D3D12_DEPTH_WRITE_MASK_ZERO,
+            DepthFunc: D3D12_COMPARISON_FUNC_ALWAYS,
+            StencilEnable: false.into(),
+            StencilReadMask: 0,
+            StencilWriteMask: 0,
+            FrontFace: D3D12_DEPTH_STENCILOP_DESC::default(),
+            BackFace: D3D12_DEPTH_STENCILOP_DESC::default(),
+        };
+
+        let mut rtv_formats = [DXGI_FORMAT_UNKNOWN; 8];
+        rtv_formats[0] = desc.color_format;
+        let pipeline_desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
+            pRootSignature: std::mem::ManuallyDrop::new(Some(root_signature.raw.clone())),
+            VS: shader_bytecode(desc.vertex_dxil),
+            PS: shader_bytecode(desc.pixel_dxil),
+            DS: D3D12_SHADER_BYTECODE {
+                pShaderBytecode: ptr::null(),
+                BytecodeLength: 0,
+            },
+            HS: D3D12_SHADER_BYTECODE {
+                pShaderBytecode: ptr::null(),
+                BytecodeLength: 0,
+            },
+            GS: D3D12_SHADER_BYTECODE {
+                pShaderBytecode: ptr::null(),
+                BytecodeLength: 0,
+            },
+            StreamOutput: D3D12_STREAM_OUTPUT_DESC {
+                pSODeclaration: ptr::null(),
+                NumEntries: 0,
+                pBufferStrides: ptr::null(),
+                NumStrides: 0,
+                RasterizedStream: 0,
+            },
+            BlendState: blend,
+            SampleMask: u32::MAX,
+            RasterizerState: rasterizer,
+            DepthStencilState: depth_stencil,
+            InputLayout: D3D12_INPUT_LAYOUT_DESC {
+                pInputElementDescs: ptr::null(),
+                NumElements: 0,
+            },
+            IBStripCutValue: D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED,
+            PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+            NumRenderTargets: 1,
+            RTVFormats: rtv_formats,
+            DSVFormat: DXGI_FORMAT_UNKNOWN,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            NodeMask: 0,
+            CachedPSO: D3D12_CACHED_PIPELINE_STATE::default(),
+            Flags: D3D12_PIPELINE_STATE_FLAG_NONE,
+        };
+        let raw: ID3D12PipelineState =
+            unsafe { self.raw.CreateGraphicsPipelineState(&pipeline_desc)? };
+        Ok(RenderPipeline {
+            raw,
+            root_signature: RootSignature {
+                raw: root_signature.raw.clone(),
+            },
+        })
     }
 
     /// Builds a compute pipeline state from a DXIL blob and its root signature.
@@ -1497,7 +1769,8 @@ impl CommandEncoder {
     /// Binds a compute pipeline; its root signature is set along with it.
     pub fn set_compute_pipeline(&mut self, pipeline: &ComputePipeline) {
         unsafe {
-            self.list.SetComputeRootSignature(&pipeline.root_signature.raw);
+            self.list
+                .SetComputeRootSignature(&pipeline.root_signature.raw);
             self.list.SetPipelineState(&pipeline.raw);
         }
     }
@@ -1518,8 +1791,7 @@ impl CommandEncoder {
     /// Records a compute dispatch of `groups` thread groups.
     pub fn dispatch(&mut self, groups: [u32; 3]) {
         unsafe {
-            self.list
-                .Dispatch(groups[0], groups[1], groups[2]);
+            self.list.Dispatch(groups[0], groups[1], groups[2]);
         }
     }
 
@@ -1536,6 +1808,88 @@ impl CommandEncoder {
         };
         unsafe {
             self.list.ResourceBarrier(&[barrier]);
+        }
+    }
+}
+
+impl CommandEncoder {
+    /// Binds a single render target and no depth buffer.
+    pub fn set_render_targets(&mut self, heap: &DescriptorHeap, rtv: DescriptorRange) {
+        let handle = heap.cpu_handle(rtv.start);
+        unsafe {
+            self.list.OMSetRenderTargets(1, Some(&handle), false, None);
+        }
+    }
+
+    /// Clears a render target to `color`.
+    pub fn clear_render_target(
+        &mut self,
+        heap: &DescriptorHeap,
+        rtv: DescriptorRange,
+        color: [f32; 4],
+    ) {
+        unsafe {
+            self.list
+                .ClearRenderTargetView(heap.cpu_handle(rtv.start), &color, None);
+        }
+    }
+
+    /// Sets a full-surface viewport starting at the origin.
+    pub fn set_viewport(&mut self, width: f32, height: f32) {
+        let viewport = D3D12_VIEWPORT {
+            TopLeftX: 0.0,
+            TopLeftY: 0.0,
+            Width: width,
+            Height: height,
+            MinDepth: 0.0,
+            MaxDepth: 1.0,
+        };
+        unsafe {
+            self.list.RSSetViewports(&[viewport]);
+        }
+    }
+
+    /// Sets a full-surface scissor rectangle starting at the origin.
+    pub fn set_scissor(&mut self, width: i32, height: i32) {
+        let rect = RECT {
+            left: 0,
+            top: 0,
+            right: width,
+            bottom: height,
+        };
+        unsafe {
+            self.list.RSSetScissorRects(&[rect]);
+        }
+    }
+
+    /// Binds a render pipeline: root signature, PSO and triangle topology.
+    pub fn set_render_pipeline(&mut self, pipeline: &RenderPipeline) {
+        unsafe {
+            self.list
+                .SetGraphicsRootSignature(&pipeline.root_signature.raw);
+            self.list.SetPipelineState(&pipeline.raw);
+            self.list
+                .IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        }
+    }
+
+    /// Uploads 32-bit root constants to graphics root parameter `root_index`.
+    pub fn set_graphics_root_constants(&mut self, root_index: u32, values: &[u32]) {
+        unsafe {
+            self.list.SetGraphicsRoot32BitConstants(
+                root_index,
+                values.len() as u32,
+                values.as_ptr() as *const core::ffi::c_void,
+                0,
+            );
+        }
+    }
+
+    /// Draws `vertex_count` vertices per instance for `instance_count`
+    /// instances.
+    pub fn draw_instanced(&mut self, vertex_count: u32, instance_count: u32) {
+        unsafe {
+            self.list.DrawInstanced(vertex_count, instance_count, 0, 0);
         }
     }
 }
@@ -1566,12 +1920,13 @@ pub fn enumerate_adapters() -> Result<Vec<AdapterInfo>, Error> {
     let mut adapters = Vec::new();
     let mut index = 0;
     loop {
-        let adapter: IDXGIAdapter1 =
-            match unsafe { factory.EnumAdapterByGpuPreference(index, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE) } {
-                Ok(adapter) => adapter,
-                Err(err) if err.code() == DXGI_ERROR_NOT_FOUND => break,
-                Err(err) => return Err(err.into()),
-            };
+        let adapter: IDXGIAdapter1 = match unsafe {
+            factory.EnumAdapterByGpuPreference(index, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE)
+        } {
+            Ok(adapter) => adapter,
+            Err(err) if err.code() == DXGI_ERROR_NOT_FOUND => break,
+            Err(err) => return Err(err.into()),
+        };
         index += 1;
         adapters.push(describe_adapter(&adapter)?);
     }
@@ -1681,7 +2036,8 @@ fn init_warp(factory: IDXGIFactory6, debug_layer: bool) -> Result<Init, Error> {
         }
         None => {
             let raw = create_d3d12_device(None)?;
-            let adapter_info = describe_device_adapter(&raw).unwrap_or_else(|_| warp_fallback_info());
+            let adapter_info =
+                describe_device_adapter(&raw).unwrap_or_else(|_| warp_fallback_info());
             (raw, adapter_info)
         }
     };
@@ -1701,9 +2057,11 @@ fn create_d3d12_device(adapter: Option<&IDXGIAdapter1>) -> Result<ID3D12Device, 
     unsafe {
         match adapter {
             Some(adapter) => D3D12CreateDevice(adapter, MIN_FEATURE_LEVEL, &mut device)?,
-            None => {
-                D3D12CreateDevice(None::<&windows::core::IUnknown>, MIN_FEATURE_LEVEL, &mut device)?
-            }
+            None => D3D12CreateDevice(
+                None::<&windows::core::IUnknown>,
+                MIN_FEATURE_LEVEL,
+                &mut device,
+            )?,
         }
     }
     device.ok_or(Error::NoCompatibleDevice)
@@ -1796,7 +2154,10 @@ mod tests {
     #[test]
     fn warp_device_initializes() {
         let init = init_headless();
-        assert!(init.adapter_info.is_software, "WARP should report a software adapter");
+        assert!(
+            init.adapter_info.is_software,
+            "WARP should report a software adapter"
+        );
         assert_eq!(init.device.node_count(), 1);
     }
 
@@ -1856,8 +2217,8 @@ mod tests {
     fn descriptor_heaps_and_views() {
         let init = init_headless();
         let device = &init.device;
-        let view_heap = DescriptorHeap::new(device, DescriptorHeapType::CbvSrvUav, 8)
-            .expect("view heap");
+        let view_heap =
+            DescriptorHeap::new(device, DescriptorHeapType::CbvSrvUav, 8).expect("view heap");
         let sampler_heap =
             DescriptorHeap::new(device, DescriptorHeapType::Sampler, 4).expect("sampler heap");
 
@@ -1907,14 +2268,18 @@ mod tests {
         let plain = device
             .create_buffer(BufferDesc::new(256, Memory::Device))
             .expect("plain buffer");
-        assert!(device
-            .create_buffer_uav_typed(&view_heap, &plain, DXGI_FORMAT_R32_FLOAT)
-            .is_err());
+        assert!(
+            device
+                .create_buffer_uav_typed(&view_heap, &plain, DXGI_FORMAT_R32_FLOAT)
+                .is_err()
+        );
         device.check_device().expect("device still alive");
         // A sampler cannot be created in a CBV/SRV/UAV heap.
-        assert!(device
-            .create_sampler(&view_heap, &SamplerDesc::default())
-            .is_err());
+        assert!(
+            device
+                .create_sampler(&view_heap, &SamplerDesc::default())
+                .is_err()
+        );
     }
 
     #[test]
@@ -2004,6 +2369,77 @@ mod tests {
             .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
             .collect();
         assert_eq!(values, (0..count).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn render_pipeline_draws_fullscreen_triangle() {
+        let init = init_headless();
+        let device = &init.device;
+        let compiler = match ShaderCompiler::load() {
+            Ok(compiler) => compiler,
+            Err(err) => {
+                eprintln!("skipping render test: {err}");
+                return;
+            }
+        };
+
+        let vs = compiler
+            .compile_hlsl(shader::FULLSCREEN_HLSL, "vs_main", "vs_6_0")
+            .expect("compile vertex shader");
+        let ps = compiler
+            .compile_hlsl(shader::FULLSCREEN_HLSL, "ps_main", "ps_6_0")
+            .expect("compile pixel shader");
+        let root = device
+            .create_graphics_root_signature(&[RootParameter::Constants {
+                shader_register: 0,
+                count: 4,
+            }])
+            .expect("graphics root signature");
+        let pipeline = device
+            .create_render_pipeline(
+                &RenderPipelineDesc {
+                    vertex_dxil: &vs,
+                    pixel_dxil: &ps,
+                    color_format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                },
+                &root,
+            )
+            .expect("render pipeline");
+
+        let (width, height) = (64u32, 32u32);
+        let texture = device
+            .create_texture(
+                TextureDesc::new(width, height, DXGI_FORMAT_R8G8B8A8_UNORM).with_render_target(),
+            )
+            .expect("render target texture");
+        let rtv_heap = DescriptorHeap::new(device, DescriptorHeapType::Rtv, 4).expect("rtv heap");
+        let rtv = device
+            .create_render_target_view(&rtv_heap, &texture)
+            .expect("rtv");
+
+        let green = [0.0f32, 1.0, 0.0, 1.0];
+        let green_bits: Vec<u32> = green.iter().map(|channel| channel.to_bits()).collect();
+
+        let mut encoder = device.record().expect("encoder");
+        encoder.transition_texture(&texture, ResourceState::RenderTarget);
+        encoder.set_render_targets(&rtv_heap, rtv);
+        encoder.clear_render_target(&rtv_heap, rtv, [0.0, 0.0, 1.0, 1.0]);
+        encoder.set_render_pipeline(&pipeline);
+        encoder.set_viewport(width as f32, height as f32);
+        encoder.set_scissor(width as i32, height as i32);
+        encoder.set_graphics_root_constants(0, &green_bits);
+        encoder.draw_instanced(3, 1);
+        encoder.transition_texture(&texture, ResourceState::CopySource);
+        let sp = device.submit(encoder).expect("submit");
+        device.wait(sp).expect("wait");
+        device.check_device().expect("device alive after draw");
+
+        let pixels = device.read_texture(&texture).expect("readback");
+        let wrong = pixels
+            .chunks_exact(4)
+            .filter(|pixel| *pixel != [0u8, 255, 0, 255])
+            .count();
+        assert_eq!(wrong, 0, "{wrong} pixels were not the drawn green");
     }
 
     #[test]

@@ -13,8 +13,8 @@ fn device_smoke(
     options: &blade_graphics::d3d12::InitOptions,
 ) -> Result<(), blade_graphics::d3d12::Error> {
     use blade_graphics::d3d12::{
-        BufferDesc, DescriptorHeap, DescriptorHeapType, Error, Memory, ResourceState, SamplerDesc,
-        TextureDesc, DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R8G8B8A8_UNORM,
+        BufferDesc, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R32_FLOAT, DescriptorHeap,
+        DescriptorHeapType, Error, Memory, ResourceState, SamplerDesc, TextureDesc,
     };
 
     let init = blade_graphics::d3d12::init_with_options(options)?;
@@ -31,7 +31,8 @@ fn device_smoke(
     let size = payload.len() as u64;
     let upload = device.create_buffer(BufferDesc::new(size, Memory::Upload))?;
     upload.write(0, &payload)?;
-    let gpu = device.create_buffer(BufferDesc::new(size, Memory::Device).with_unordered_access())?;
+    let gpu =
+        device.create_buffer(BufferDesc::new(size, Memory::Device).with_unordered_access())?;
     let readback = device.create_buffer(BufferDesc::new(size, Memory::Readback))?;
     println!(
         "buffers: upload {} B, device {} B, readback {} B (alignment {})",
@@ -59,11 +60,8 @@ fn device_smoke(
 
     // 2. Texture upload + readback.
     let (width, height) = (128u32, 64u32);
-    let texture = device.create_texture(TextureDesc::new(
-        width,
-        height,
-        DXGI_FORMAT_R8G8B8A8_UNORM,
-    ))?;
+    let texture =
+        device.create_texture(TextureDesc::new(width, height, DXGI_FORMAT_R8G8B8A8_UNORM))?;
     let texels: Vec<u8> = (0..width * height)
         .flat_map(|i| [(i % 251) as u8, 0x10, 0x20, 0xFF])
         .collect();
@@ -71,7 +69,9 @@ fn device_smoke(
     let texels_back = device.read_texture(&texture)?;
     if texels_back != texels {
         eprintln!("texture round-trip mismatch");
-        return Err(Error::InvalidState("texture round-trip produced wrong data"));
+        return Err(Error::InvalidState(
+            "texture round-trip produced wrong data",
+        ));
     }
     println!(
         "texture {width}x{height} upload + readback ({} KiB): OK",

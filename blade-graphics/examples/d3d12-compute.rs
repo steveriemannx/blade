@@ -38,7 +38,8 @@ fn compute_dispatch(
 
     let count = 64u32;
     let byte_size = count as u64 * 4;
-    let gpu = device.create_buffer(BufferDesc::new(byte_size, Memory::Device).with_unordered_access())?;
+    let gpu =
+        device.create_buffer(BufferDesc::new(byte_size, Memory::Device).with_unordered_access())?;
     let readback = device.create_buffer(BufferDesc::new(byte_size, Memory::Readback))?;
     let heap = DescriptorHeap::new(device, DescriptorHeapType::CbvSrvUav, 4)?;
     let uav = device.create_buffer_uav_structured(&heap, &gpu, 4)?;

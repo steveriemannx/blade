@@ -33,6 +33,29 @@ type DxcCreateInstanceProc =
 /// that keep the DXC release outside the normal DLL search path.
 pub const DXC_PATH_ENV: &str = "BLADE_DXC_PATH";
 
+/// Minimal graphics shader pair: a fullscreen triangle whose pixel color comes
+/// from a `float4` in the 32-bit root constants at `b0`.
+pub const FULLSCREEN_HLSL: &str = r#"
+cbuffer Params : register(b0) {
+    float4 g_color;
+};
+
+struct VSOutput {
+    float4 position : SV_Position;
+};
+
+VSOutput vs_main(uint vertex_id : SV_VertexID) {
+    float2 uv = float2((vertex_id << 1) & 2, vertex_id & 2);
+    VSOutput output;
+    output.position = float4(uv * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
+    return output;
+}
+
+float4 ps_main(VSOutput input) : SV_Target {
+    return g_color;
+}
+"#;
+
 /// Trivial compute shader used by tests and examples: writes the dispatch
 /// thread id into the bound output buffer.
 pub const TRIVIAL_COMPUTE_HLSL: &str = r#"
@@ -153,12 +176,15 @@ fn load_dxc_library() -> Result<(HMODULE, DxcCreateInstanceProc), Error> {
         let wide: Vec<u16> = candidate.encode_wide().chain(std::iter::once(0)).collect();
         match unsafe { LoadLibraryW(PCWSTR(wide.as_ptr())) } {
             Ok(module) => {
-                let Some(proc) = (unsafe { GetProcAddress(module, s!("DxcCreateInstance")) }) else {
+                let Some(proc) = (unsafe { GetProcAddress(module, s!("DxcCreateInstance")) })
+                else {
                     unsafe {
                         let _ = FreeLibrary(module);
                     }
-                    last_error =
-                        format!("{} exports no DxcCreateInstance", candidate.to_string_lossy());
+                    last_error = format!(
+                        "{} exports no DxcCreateInstance",
+                        candidate.to_string_lossy()
+                    );
                     continue;
                 };
                 // `GetProcAddress` yields an opaque function pointer; the DXC
