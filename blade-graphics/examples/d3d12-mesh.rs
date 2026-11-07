@@ -34,7 +34,7 @@ fn mesh_demo(
         &RenderPipelineDesc {
             vertex_dxil: &vs,
             pixel_dxil: &ps,
-            color_format: DXGI_FORMAT_R8G8B8A8_UNORM,
+            color_formats: &[DXGI_FORMAT_R8G8B8A8_UNORM],
             vertex_attributes: &[
                 VertexAttribute {
                     semantic: "POSITION",
@@ -85,7 +85,7 @@ fn mesh_demo(
     let mut encoder = device.record()?;
     encoder.transition_texture(&texture, ResourceState::RenderTarget);
     encoder.transition_texture(&depth_texture, ResourceState::DepthWrite);
-    encoder.set_render_targets_with_depth(&rtv_heap, rtv, &dsv_heap, dsv);
+    encoder.set_render_targets_with_depth(&rtv_heap, &[rtv], &dsv_heap, dsv);
     encoder.clear_render_target(&rtv_heap, rtv, [0.0, 0.0, 1.0, 1.0]);
     encoder.clear_depth_stencil(&dsv_heap, dsv, 1.0);
     encoder.set_render_pipeline(&pipeline);

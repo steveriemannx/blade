@@ -82,6 +82,57 @@ float4 ps_main(VSOutput input) : SV_Target {
 }
 "#;
 
+/// Textured fullscreen quad: samples a bound `Texture2D` at `t0` with the
+/// static sampler at `s0` and writes the result to `SV_Target`.
+pub const TEXTURED_HLSL: &str = r#"
+Texture2D g_texture : register(t0);
+SamplerState g_sampler : register(s0);
+
+struct VSOutput {
+    float4 position : SV_Position;
+    float2 uv : TEXCOORD0;
+};
+
+VSOutput vs_main(uint vertex_id : SV_VertexID) {
+    float2 uv = float2((vertex_id << 1) & 2, vertex_id & 2);
+    VSOutput output;
+    output.position = float4(uv * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
+    output.uv = uv;
+    return output;
+}
+
+float4 ps_main(VSOutput input) : SV_Target {
+    return g_texture.Sample(g_sampler, input.uv);
+}
+"#;
+
+/// Multiple-render-target shader: writes a different constant color to
+/// `SV_Target0` and `SV_Target1`.
+pub const MRT_HLSL: &str = r#"
+struct VSOutput {
+    float4 position : SV_Position;
+};
+
+struct PSOutput {
+    float4 target0 : SV_Target0;
+    float4 target1 : SV_Target1;
+};
+
+VSOutput vs_main(uint vertex_id : SV_VertexID) {
+    float2 uv = float2((vertex_id << 1) & 2, vertex_id & 2);
+    VSOutput output;
+    output.position = float4(uv * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
+    return output;
+}
+
+PSOutput ps_main(VSOutput input) {
+    PSOutput output;
+    output.target0 = float4(1.0, 0.0, 0.0, 1.0);
+    output.target1 = float4(0.0, 1.0, 0.0, 1.0);
+    return output;
+}
+"#;
+
 /// Trivial compute shader used by tests and examples: writes the dispatch
 /// thread id into the bound output buffer.
 pub const TRIVIAL_COMPUTE_HLSL: &str = r#"

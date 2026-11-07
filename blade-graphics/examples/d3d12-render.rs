@@ -43,7 +43,7 @@ fn render_triangle(
         &RenderPipelineDesc {
             vertex_dxil: &vs,
             pixel_dxil: &ps,
-            color_format: DXGI_FORMAT_R8G8B8A8_UNORM,
+            color_formats: &[DXGI_FORMAT_R8G8B8A8_UNORM],
             vertex_attributes: &[],
             depth_format: None,
         },
@@ -62,7 +62,7 @@ fn render_triangle(
 
     let mut encoder = device.record()?;
     encoder.transition_texture(&texture, ResourceState::RenderTarget);
-    encoder.set_render_targets(&rtv_heap, rtv);
+    encoder.set_render_targets(&rtv_heap, &[rtv]);
     encoder.clear_render_target(&rtv_heap, rtv, [0.0, 0.0, 1.0, 1.0]);
     encoder.set_render_pipeline(&pipeline);
     encoder.set_viewport(width as f32, height as f32);

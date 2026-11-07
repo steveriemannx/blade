@@ -91,8 +91,9 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_ROOT_SIGNATURE_FLAG_NONE, D3D12_ROOT_SIGNATURE_FLAGS, D3D12_SAMPLER_DESC,
     D3D12_SHADER_BYTECODE, D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_SHADER_RESOURCE_VIEW_DESC_0,
     D3D12_SHADER_VISIBILITY_ALL, D3D12_SRV_DIMENSION_BUFFER, D3D12_SRV_DIMENSION_TEXTURE2D,
-    D3D12_STREAM_OUTPUT_DESC, D3D12_TEX2D_SRV, D3D12_TEXTURE_ADDRESS_MODE,
-    D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_COPY_LOCATION, D3D12_TEXTURE_COPY_LOCATION_0,
+    D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE, D3D12_STATIC_SAMPLER_DESC, D3D12_STREAM_OUTPUT_DESC,
+    D3D12_TEX2D_SRV, D3D12_TEXTURE_ADDRESS_MODE, D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+    D3D12_TEXTURE_COPY_LOCATION, D3D12_TEXTURE_COPY_LOCATION_0,
     D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
     D3D12_TEXTURE_LAYOUT_UNKNOWN, D3D12_UAV_DIMENSION_BUFFER, D3D12_UNORDERED_ACCESS_VIEW_DESC,
     D3D12_UNORDERED_ACCESS_VIEW_DESC_0, D3D12_VERTEX_BUFFER_VIEW, D3D12_VIEWPORT,
@@ -1271,6 +1272,33 @@ pub struct DescriptorRange {
     pub count: u32,
 }
 
+/// A sampler baked into the root signature as a `D3D12_STATIC_SAMPLER_DESC`.
+///
+/// Static samplers are cheaper than sampler descriptor heaps and are what the
+/// render passes use for the common linear/clamp case.
+#[derive(Clone, Copy, Debug)]
+pub struct StaticSampler {
+    pub shader_register: u32,
+    pub filter: D3D12_FILTER,
+    pub address_mode: D3D12_TEXTURE_ADDRESS_MODE,
+    pub max_anisotropy: u32,
+    pub min_lod: f32,
+    pub max_lod: f32,
+}
+
+impl Default for StaticSampler {
+    fn default() -> Self {
+        Self {
+            shader_register: 0,
+            filter: D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+            address_mode: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+            max_anisotropy: 1,
+            min_lod: 0.0,
+            max_lod: f32::MAX,
+        }
+    }
+}
+
 /// Sampler state. Phase 2 only needs the linear/clamp default.
 #[derive(Clone, Copy, Debug)]
 pub struct SamplerDesc {
@@ -1579,7 +1607,8 @@ pub struct VertexAttribute {
 pub struct RenderPipelineDesc<'a> {
     pub vertex_dxil: &'a [u8],
     pub pixel_dxil: &'a [u8],
-    pub color_format: DXGI_FORMAT,
+    /// Render-target formats, in `SV_Target` order.
+    pub color_formats: &'a [DXGI_FORMAT],
     /// Per-vertex attributes; empty for a `SV_VertexID`-only shader.
     pub vertex_attributes: &'a [VertexAttribute],
     /// Depth-stencil format when the pass has a depth target. Enables depth
@@ -1658,17 +1687,27 @@ impl Device {
             .iter()
             .map(|table| RootParameter::DescriptorTable(*table))
             .collect();
-        self.build_root_signature(&parameters, D3D12_ROOT_SIGNATURE_FLAG_NONE)
+        self.build_root_signature(&parameters, &[], D3D12_ROOT_SIGNATURE_FLAG_NONE)
     }
 
     /// Builds a graphics root signature from descriptor tables and 32-bit root
-    /// constants.
+    /// constants, without static samplers.
     pub fn create_graphics_root_signature(
         &self,
         parameters: &[RootParameter],
     ) -> Result<RootSignature, Error> {
+        self.create_graphics_root_signature_with_samplers(parameters, &[])
+    }
+
+    /// Builds a graphics root signature with static samplers baked in.
+    pub fn create_graphics_root_signature_with_samplers(
+        &self,
+        parameters: &[RootParameter],
+        samplers: &[StaticSampler],
+    ) -> Result<RootSignature, Error> {
         self.build_root_signature(
             parameters,
+            samplers,
             D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
         )
     }
@@ -1676,6 +1715,7 @@ impl Device {
     fn build_root_signature(
         &self,
         parameters: &[RootParameter],
+        samplers: &[StaticSampler],
         flags: D3D12_ROOT_SIGNATURE_FLAGS,
     ) -> Result<RootSignature, Error> {
         let ranges: Vec<D3D12_DESCRIPTOR_RANGE> = parameters
@@ -1726,11 +1766,29 @@ impl Device {
                 },
             })
             .collect();
+        let static_samplers: Vec<D3D12_STATIC_SAMPLER_DESC> = samplers
+            .iter()
+            .map(|sampler| D3D12_STATIC_SAMPLER_DESC {
+                Filter: sampler.filter,
+                AddressU: sampler.address_mode,
+                AddressV: sampler.address_mode,
+                AddressW: sampler.address_mode,
+                MipLODBias: 0.0,
+                MaxAnisotropy: sampler.max_anisotropy,
+                ComparisonFunc: D3D12_COMPARISON_FUNC_ALWAYS,
+                BorderColor: D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE,
+                MinLOD: sampler.min_lod,
+                MaxLOD: sampler.max_lod,
+                ShaderRegister: sampler.shader_register,
+                RegisterSpace: 0,
+                ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+            })
+            .collect();
         let desc = D3D12_ROOT_SIGNATURE_DESC {
             NumParameters: root_parameters.len() as u32,
             pParameters: root_parameters.as_ptr(),
-            NumStaticSamplers: 0,
-            pStaticSamplers: ptr::null(),
+            NumStaticSamplers: static_samplers.len() as u32,
+            pStaticSamplers: static_samplers.as_ptr(),
             Flags: flags,
         };
 
@@ -1891,8 +1949,15 @@ impl Device {
             })
             .collect();
 
+        if desc.color_formats.is_empty() || desc.color_formats.len() > 8 {
+            return Err(Error::InvalidState(
+                "render pipelines need between 1 and 8 color targets",
+            ));
+        }
         let mut rtv_formats = [DXGI_FORMAT_UNKNOWN; 8];
-        rtv_formats[0] = desc.color_format;
+        for (destination, format) in rtv_formats.iter_mut().zip(desc.color_formats) {
+            *destination = *format;
+        }
         let pipeline_desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
             pRootSignature: borrow_interface(&root_signature.raw),
             VS: shader_bytecode(desc.vertex_dxil),
@@ -1926,7 +1991,7 @@ impl Device {
             },
             IBStripCutValue: D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED,
             PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
-            NumRenderTargets: 1,
+            NumRenderTargets: desc.color_formats.len() as u32,
             RTVFormats: rtv_formats,
             DSVFormat: desc.depth_format.unwrap_or(DXGI_FORMAT_UNKNOWN),
             SampleDesc: DXGI_SAMPLE_DESC {
@@ -2031,27 +2096,39 @@ impl CommandEncoder {
 }
 
 impl CommandEncoder {
-    /// Binds a single render target and no depth buffer.
-    pub fn set_render_targets(&mut self, heap: &DescriptorHeap, rtv: DescriptorRange) {
-        let handle = heap.cpu_handle(rtv.start);
+    /// Binds color render targets (in `SV_Target` order) and no depth buffer.
+    pub fn set_render_targets(&mut self, heap: &DescriptorHeap, targets: &[DescriptorRange]) {
+        let handles: Vec<D3D12_CPU_DESCRIPTOR_HANDLE> = targets
+            .iter()
+            .map(|target| heap.cpu_handle(target.start))
+            .collect();
         unsafe {
-            self.list.OMSetRenderTargets(1, Some(&handle), false, None);
+            self.list
+                .OMSetRenderTargets(handles.len() as u32, Some(handles.as_ptr()), false, None);
         }
     }
 
-    /// Binds a render target plus a depth-stencil target.
+    /// Binds color render targets (in `SV_Target` order) plus a depth-stencil
+    /// target.
     pub fn set_render_targets_with_depth(
         &mut self,
         color_heap: &DescriptorHeap,
-        color: DescriptorRange,
+        colors: &[DescriptorRange],
         depth_heap: &DescriptorHeap,
         depth: DescriptorRange,
     ) {
-        let color_handle = color_heap.cpu_handle(color.start);
+        let color_handles: Vec<D3D12_CPU_DESCRIPTOR_HANDLE> = colors
+            .iter()
+            .map(|color| color_heap.cpu_handle(color.start))
+            .collect();
         let depth_handle = depth_heap.cpu_handle(depth.start);
         unsafe {
-            self.list
-                .OMSetRenderTargets(1, Some(&color_handle), false, Some(&depth_handle));
+            self.list.OMSetRenderTargets(
+                color_handles.len() as u32,
+                Some(color_handles.as_ptr()),
+                false,
+                Some(&depth_handle),
+            );
         }
     }
 
@@ -2155,6 +2232,20 @@ impl CommandEncoder {
             self.list.SetPipelineState(&pipeline.raw);
             self.list
                 .IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        }
+    }
+
+    /// Binds a descriptor table of `heap` to graphics root parameter
+    /// `root_index`.
+    pub fn set_graphics_descriptor_table(
+        &mut self,
+        root_index: u32,
+        heap: &DescriptorHeap,
+        range: DescriptorRange,
+    ) {
+        unsafe {
+            self.list
+                .SetGraphicsRootDescriptorTable(root_index, heap.range_gpu_handle(range));
         }
     }
 
@@ -2982,7 +3073,7 @@ mod tests {
                 &RenderPipelineDesc {
                     vertex_dxil: &vs,
                     pixel_dxil: &ps,
-                    color_format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                    color_formats: &[DXGI_FORMAT_R8G8B8A8_UNORM],
                     vertex_attributes: &[],
                     depth_format: None,
                 },
@@ -3006,7 +3097,7 @@ mod tests {
 
         let mut encoder = device.record().expect("encoder");
         encoder.transition_texture(&texture, ResourceState::RenderTarget);
-        encoder.set_render_targets(&rtv_heap, rtv);
+        encoder.set_render_targets(&rtv_heap, &[rtv]);
         encoder.clear_render_target(&rtv_heap, rtv, [0.0, 0.0, 1.0, 1.0]);
         encoder.set_render_pipeline(&pipeline);
         encoder.set_viewport(width as f32, height as f32);
@@ -3125,10 +3216,10 @@ mod tests {
         encoder.transition_texture(texture, ResourceState::RenderTarget);
         if let Some((depth_texture, depth_range, depth_heap)) = depth {
             encoder.transition_texture(depth_texture, ResourceState::DepthWrite);
-            encoder.set_render_targets_with_depth(rtv_heap, rtv, depth_heap, depth_range);
+            encoder.set_render_targets_with_depth(rtv_heap, &[rtv], depth_heap, depth_range);
             encoder.clear_depth_stencil(depth_heap, depth_range, 1.0);
         } else {
-            encoder.set_render_targets(rtv_heap, rtv);
+            encoder.set_render_targets(rtv_heap, &[rtv]);
         }
         encoder.clear_render_target(rtv_heap, rtv, clear);
         encoder.set_render_pipeline(pipeline);
@@ -3169,7 +3260,7 @@ mod tests {
                 &RenderPipelineDesc {
                     vertex_dxil: &vs,
                     pixel_dxil: &ps,
-                    color_format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                    color_formats: &[DXGI_FORMAT_R8G8B8A8_UNORM],
                     vertex_attributes: &[
                         VertexAttribute {
                             semantic: "POSITION",
@@ -3280,7 +3371,7 @@ mod tests {
                 &RenderPipelineDesc {
                     vertex_dxil: &vs,
                     pixel_dxil: &ps,
-                    color_format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                    color_formats: &[DXGI_FORMAT_R8G8B8A8_UNORM],
                     vertex_attributes: &attributes,
                     depth_format: Some(DXGI_FORMAT_D32_FLOAT),
                 },
@@ -3292,7 +3383,7 @@ mod tests {
                 &RenderPipelineDesc {
                     vertex_dxil: &vs,
                     pixel_dxil: &ps,
-                    color_format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                    color_formats: &[DXGI_FORMAT_R8G8B8A8_UNORM],
                     vertex_attributes: &attributes,
                     depth_format: None,
                 },
@@ -3385,6 +3476,204 @@ mod tests {
         device
             .check_device()
             .expect("device alive after depth test");
+    }
+
+    #[test]
+    fn textured_quad_samples_texture_srv() {
+        let init = init_headless();
+        let device = &init.device;
+        let compiler = match ShaderCompiler::load() {
+            Ok(compiler) => compiler,
+            Err(err) => {
+                eprintln!("skipping textured quad test: {err}");
+                return;
+            }
+        };
+        let vs = compiler
+            .compile_hlsl(shader::TEXTURED_HLSL, "vs_main", "vs_6_0")
+            .expect("vertex shader");
+        let ps = compiler
+            .compile_hlsl(shader::TEXTURED_HLSL, "ps_main", "ps_6_0")
+            .expect("pixel shader");
+
+        // Root signature: one SRV descriptor table at t0, static clamp sampler.
+        let root = device
+            .create_graphics_root_signature_with_samplers(
+                &[RootParameter::DescriptorTable(RootDescriptorTable {
+                    kind: DescriptorRangeKind::Srv,
+                    count: 1,
+                    base_shader_register: 0,
+                })],
+                &[StaticSampler::default()],
+            )
+            .expect("root signature with static sampler");
+        let pipeline = device
+            .create_render_pipeline(
+                &RenderPipelineDesc {
+                    vertex_dxil: &vs,
+                    pixel_dxil: &ps,
+                    color_formats: &[DXGI_FORMAT_R8G8B8A8_UNORM],
+                    vertex_attributes: &[],
+                    depth_format: None,
+                },
+                &root,
+            )
+            .expect("textured pipeline");
+
+        // A 16x16 texture with a unique color per texel.
+        let (size, texels) = (16u32, {
+            let mut texels = Vec::with_capacity(16 * 16 * 4);
+            for y in 0..16u32 {
+                for x in 0..16u32 {
+                    texels.extend_from_slice(&[
+                        (x * 16) as u8,
+                        (y * 16) as u8,
+                        ((x + y) * 8) as u8,
+                        255,
+                    ]);
+                }
+            }
+            texels
+        });
+        let texture = device
+            .create_texture(TextureDesc::new(size, size, DXGI_FORMAT_R8G8B8A8_UNORM))
+            .expect("source texture");
+        device
+            .upload_texture(&texture, &texels)
+            .expect("upload source texture");
+
+        let target = device
+            .create_texture(
+                TextureDesc::new(size, size, DXGI_FORMAT_R8G8B8A8_UNORM).with_render_target(),
+            )
+            .expect("color target");
+        let rtv_heap = DescriptorHeap::new(device, DescriptorHeapType::Rtv, 4).expect("rtv heap");
+        let rtv = device
+            .create_render_target_view(&rtv_heap, &target)
+            .expect("rtv");
+        let srv_heap =
+            DescriptorHeap::new(device, DescriptorHeapType::CbvSrvUav, 4).expect("srv heap");
+        let srv = device
+            .create_texture_srv(&srv_heap, &texture)
+            .expect("texture srv");
+
+        let mut encoder = device.record().expect("encoder");
+        encoder.transition_texture(&texture, ResourceState::ShaderRead);
+        encoder.transition_texture(&target, ResourceState::RenderTarget);
+        encoder.set_render_targets(&rtv_heap, &[rtv]);
+        encoder.clear_render_target(&rtv_heap, rtv, [0.0, 0.0, 0.0, 1.0]);
+        encoder.set_render_pipeline(&pipeline);
+        encoder.set_descriptor_heap(&srv_heap);
+        encoder.set_graphics_descriptor_table(0, &srv_heap, srv);
+        encoder.set_viewport(size as f32, size as f32);
+        encoder.set_scissor(size as i32, size as i32);
+        encoder.draw_instanced(3, 1);
+        encoder.transition_texture(&target, ResourceState::CopySource);
+        let sp = device.submit(encoder).expect("submit");
+        device.wait(sp).expect("wait");
+        device.check_device().expect("device alive after sampling");
+
+        let pixels = device.read_texture(&target).expect("readback");
+        let mut worst = 0i32;
+        for (index, (sampled, source)) in pixels
+            .chunks_exact(4)
+            .zip(texels.chunks_exact(4))
+            .enumerate()
+        {
+            for channel in 0..3 {
+                let delta = i32::from(sampled[channel]) - i32::from(source[channel]);
+                assert!(
+                    delta.abs() <= 2,
+                    "texel {index} channel {channel}: sampled {}, expected {}",
+                    sampled[channel],
+                    source[channel]
+                );
+                worst = worst.max(delta.abs());
+            }
+        }
+        assert_eq!(worst <= 2, true);
+    }
+
+    #[test]
+    fn multiple_render_targets_write_both_targets() {
+        let init = init_headless();
+        let device = &init.device;
+        let compiler = match ShaderCompiler::load() {
+            Ok(compiler) => compiler,
+            Err(err) => {
+                eprintln!("skipping MRT test: {err}");
+                return;
+            }
+        };
+        let vs = compiler
+            .compile_hlsl(shader::MRT_HLSL, "vs_main", "vs_6_0")
+            .expect("vertex shader");
+        let ps = compiler
+            .compile_hlsl(shader::MRT_HLSL, "ps_main", "ps_6_0")
+            .expect("pixel shader");
+        let root = device
+            .create_graphics_root_signature(&[])
+            .expect("root signature");
+        let pipeline = device
+            .create_render_pipeline(
+                &RenderPipelineDesc {
+                    vertex_dxil: &vs,
+                    pixel_dxil: &ps,
+                    color_formats: &[DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM],
+                    vertex_attributes: &[],
+                    depth_format: None,
+                },
+                &root,
+            )
+            .expect("MRT pipeline");
+
+        let (width, height) = (32u32, 32u32);
+        let target0 = device
+            .create_texture(
+                TextureDesc::new(width, height, DXGI_FORMAT_R8G8B8A8_UNORM).with_render_target(),
+            )
+            .expect("target 0");
+        let target1 = device
+            .create_texture(
+                TextureDesc::new(width, height, DXGI_FORMAT_R8G8B8A8_UNORM).with_render_target(),
+            )
+            .expect("target 1");
+        let rtv_heap = DescriptorHeap::new(device, DescriptorHeapType::Rtv, 4).expect("rtv heap");
+        let rtv0 = device
+            .create_render_target_view(&rtv_heap, &target0)
+            .expect("rtv 0");
+        let rtv1 = device
+            .create_render_target_view(&rtv_heap, &target1)
+            .expect("rtv 1");
+
+        let mut encoder = device.record().expect("encoder");
+        encoder.transition_texture(&target0, ResourceState::RenderTarget);
+        encoder.transition_texture(&target1, ResourceState::RenderTarget);
+        encoder.set_render_targets(&rtv_heap, &[rtv0, rtv1]);
+        encoder.clear_render_target(&rtv_heap, rtv0, [0.0, 0.0, 0.0, 1.0]);
+        encoder.clear_render_target(&rtv_heap, rtv1, [0.0, 0.0, 0.0, 1.0]);
+        encoder.set_render_pipeline(&pipeline);
+        encoder.set_viewport(width as f32, height as f32);
+        encoder.set_scissor(width as i32, height as i32);
+        encoder.draw_instanced(3, 1);
+        encoder.transition_texture(&target0, ResourceState::CopySource);
+        encoder.transition_texture(&target1, ResourceState::CopySource);
+        let sp = device.submit(encoder).expect("submit");
+        device.wait(sp).expect("wait");
+        device.check_device().expect("device alive after MRT draw");
+
+        let pixels0 = device.read_texture(&target0).expect("readback target 0");
+        let pixels1 = device.read_texture(&target1).expect("readback target 1");
+        let wrong0 = pixels0
+            .chunks_exact(4)
+            .filter(|p| *p != [255, 0, 0, 255])
+            .count();
+        let wrong1 = pixels1
+            .chunks_exact(4)
+            .filter(|p| *p != [0, 255, 0, 255])
+            .count();
+        assert_eq!(wrong0, 0, "target 0 should be red (SV_Target0)");
+        assert_eq!(wrong1, 0, "target 1 should be green (SV_Target1)");
     }
 
     #[test]
