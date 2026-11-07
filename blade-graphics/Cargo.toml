@@ -50,6 +50,10 @@ required-features = ["d3d12"]
 name = "d3d12-raytracing"
 required-features = ["d3d12"]
 
+[[example]]
+name = "d3d12-window"
+required-features = ["d3d12"]
+
 [features]
 # Direct3D 12 backend (Windows only). The device layer initializes the device,
 # creates buffers and submits copies; see `etc/d3d12.md` for the design and the

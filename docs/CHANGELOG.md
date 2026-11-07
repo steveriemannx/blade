@@ -18,6 +18,7 @@ Changelog for *Blade* project
 - graphics: the Windows-only `d3d12` backend adds explicit heaps and residency — 64 KiB bump allocator over `ID3D12Heap`, placed buffers via `CreatePlacedResource`, and `MakeResident`/`Evict`; the smoke example round-trips a placed buffer through the GPU and exercises eviction
 - graphics: the Windows-only `d3d12` backend adds placed textures — `texture_allocation_size` (resource allocation info) and `create_placed_texture`; a rendered placed render target is copied to a second placed texture and verified, and the smoke example round-trips an uploaded placed texture
 - graphics: the Windows-only `d3d12` backend adds DXR 1.1 ray-tracing pipelines — DXIL library compilation (`lib_6_3`), state objects with hit groups and global root signatures, shader binding tables and `DispatchRays`; the ray-tracing example traces a ray through both ray queries and a pipeline on WARP
+- graphics: the Windows-only `d3d12` backend gains a visible-window demo (`d3d12-window`) that renders a procedural pattern into a flip-model swapchain and presents it, verified by screenshot on an interactive desktop session
 - render: retain SVGF history on frozen frames; vehicle diagnostic captures require `BLADE_CAPTURE_VEHICLE=1` even when running ignored tests
 - graphics: ray queries require macOS 13+ / iOS 16+ on Metal; compute limits report direct sampled-texture slots, and renderer resource tables account for Vulkan image descriptors
 - render: `GBufferViews::motion` is now `Rgba16Float`, with screen-space motion in XY and previous-hit distance in Z
