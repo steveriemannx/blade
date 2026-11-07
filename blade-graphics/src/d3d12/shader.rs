@@ -185,6 +185,22 @@ fn ps_main(input: VSOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
+/// Storage-texture compute shader: writes a gradient into an
+/// `RWTexture2D<float4>` bound at `u0`, one texel per thread.
+pub const COMPUTE_TEXTURE_WRITE_HLSL: &str = r#"
+RWTexture2D<float4> g_target : register(u0);
+
+[numthreads(4, 4, 1)]
+void main(uint3 thread_id : SV_DispatchThreadID) {
+    g_target[thread_id.xy] = float4(
+        (float(thread_id.x) + 0.5) / 4.0,
+        (float(thread_id.y) + 0.5) / 4.0,
+        0.5,
+        1.0
+    );
+}
+"#;
+
 /// Ray-query compute shader: traces one ray from `(0, 0, -2)` along `+Z` against
 /// the bound top-level acceleration structure and writes the hit distance (or
 /// `-1` for a miss) into the output buffer.

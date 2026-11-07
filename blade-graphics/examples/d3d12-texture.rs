@@ -113,6 +113,89 @@ fn textured_quad(
     Ok(())
 }
 
+#[cfg(windows)]
+fn storage_texture_pass(
+    options: &blade_graphics::d3d12::InitOptions,
+) -> Result<(), blade_graphics::d3d12::Error> {
+    use blade_graphics::d3d12::{
+        DXGI_FORMAT_R8G8B8A8_UNORM, DescriptorHeap, DescriptorHeapType, DescriptorRangeKind, Error,
+        ResourceState, RootDescriptorTable, ShaderCompiler, TextureDesc, shader,
+    };
+
+    let init = blade_graphics::d3d12::init_with_options(options)?;
+    let device = &init.device;
+    let compiler = ShaderCompiler::load()?;
+    let dxil = compiler.compile_hlsl(shader::COMPUTE_TEXTURE_WRITE_HLSL, "main", "cs_6_0")?;
+    let root = device.create_compute_root_signature(&[RootDescriptorTable {
+        kind: DescriptorRangeKind::Uav,
+        count: 1,
+        base_shader_register: 0,
+    }])?;
+    let pipeline = device.create_compute_pipeline(&dxil, &root)?;
+
+    let size = 8u32;
+    let texture = device.create_texture(
+        TextureDesc::new(size, size, DXGI_FORMAT_R8G8B8A8_UNORM).with_unordered_access(),
+    )?;
+    let copied_texture =
+        device.create_texture(TextureDesc::new(size, size, DXGI_FORMAT_R8G8B8A8_UNORM))?;
+    let heap = DescriptorHeap::new(device, DescriptorHeapType::CbvSrvUav, 4)?;
+    let uav = device.create_texture_uav(&heap, &texture)?;
+
+    let mut encoder = device.record()?;
+    encoder.transition_texture(&texture, ResourceState::UnorderedAccess);
+    encoder.set_descriptor_heap(&heap);
+    encoder.set_compute_pipeline(&pipeline);
+    encoder.set_compute_descriptor_table(0, &heap, uav);
+    encoder.dispatch([2, 2, 1]);
+    encoder.uav_barrier_texture(&texture);
+    encoder.transition_texture(&texture, ResourceState::CopySource);
+    encoder.transition_texture(&copied_texture, ResourceState::CopyDest);
+    encoder.copy_texture(&copied_texture, &texture);
+    encoder.transition_texture(&copied_texture, ResourceState::CopySource);
+    let sp = device.submit(encoder)?;
+    device.wait(sp)?;
+    device.check_device()?;
+
+    let written = device.read_texture(&texture)?;
+    let copied = device.read_texture(&copied_texture)?;
+    for (index, pixel) in written.chunks_exact(4).enumerate() {
+        let x = (index as u32) % size;
+        let y = (index as u32) / size;
+        let expected = [
+            (((x as f32 + 0.5) / 4.0) * 255.0).round() as u8,
+            (((y as f32 + 0.5) / 4.0) * 255.0).round() as u8,
+            128,
+            255,
+        ];
+        for channel in 0..4 {
+            let delta = i32::from(pixel[channel]) - i32::from(expected[channel]);
+            if delta.abs() > 1 {
+                eprintln!(
+                    "texel {index} channel {channel}: {} != {}",
+                    pixel[channel], expected[channel]
+                );
+                return Err(Error::InvalidState(
+                    "storage texture write produced wrong texels",
+                ));
+            }
+        }
+    }
+    let wrong = copied
+        .chunks_exact(4)
+        .zip(written.chunks_exact(4))
+        .filter(|(copied, written)| copied != written)
+        .count();
+    if wrong != 0 {
+        eprintln!("{wrong} texels differ after the texture copy");
+        return Err(Error::InvalidState("texture copy produced wrong texels"));
+    }
+    eprintln!(
+        "storage texture: compute wrote {size}x{size} via UAV, copied to a second texture, all texels verified"
+    );
+    Ok(())
+}
+
 fn main() {
     #[cfg(windows)]
     {
@@ -126,6 +209,10 @@ fn main() {
             eprintln!("== {label} ==");
             if let Err(err) = textured_quad(&options) {
                 eprintln!("{label} textured quad failed: {err}");
+                failed = true;
+            }
+            if let Err(err) = storage_texture_pass(&options) {
+                eprintln!("{label} storage texture pass failed: {err}");
                 failed = true;
             }
         }

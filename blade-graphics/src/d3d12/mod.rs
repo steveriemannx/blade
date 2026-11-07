@@ -105,12 +105,13 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_SHADER_RESOURCE_VIEW_DESC_0,
     D3D12_SHADER_VISIBILITY_ALL, D3D12_SRV_DIMENSION_BUFFER, D3D12_SRV_DIMENSION_TEXTURE2D,
     D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE, D3D12_STATIC_SAMPLER_DESC, D3D12_STREAM_OUTPUT_DESC,
-    D3D12_TEX2D_SRV, D3D12_TEXTURE_ADDRESS_MODE, D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+    D3D12_TEX2D_SRV, D3D12_TEX2D_UAV, D3D12_TEXTURE_ADDRESS_MODE, D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
     D3D12_TEXTURE_COPY_LOCATION, D3D12_TEXTURE_COPY_LOCATION_0,
     D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-    D3D12_TEXTURE_LAYOUT_UNKNOWN, D3D12_UAV_DIMENSION_BUFFER, D3D12_UNORDERED_ACCESS_VIEW_DESC,
-    D3D12_UNORDERED_ACCESS_VIEW_DESC_0, D3D12_VERTEX_BUFFER_VIEW, D3D12_VIEWPORT,
-    D3D12SerializeRootSignature, ID3D12DescriptorHeap, ID3D12PipelineState, ID3D12RootSignature,
+    D3D12_TEXTURE_LAYOUT_UNKNOWN, D3D12_UAV_DIMENSION_BUFFER, D3D12_UAV_DIMENSION_TEXTURE2D,
+    D3D12_UNORDERED_ACCESS_VIEW_DESC, D3D12_UNORDERED_ACCESS_VIEW_DESC_0, D3D12_VERTEX_BUFFER_VIEW,
+    D3D12_VIEWPORT, D3D12SerializeRootSignature, ID3D12DescriptorHeap, ID3D12PipelineState,
+    ID3D12RootSignature,
 };
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_0, D3D12_FEATURE_DATA_D3D12_OPTIONS5,
@@ -983,6 +984,31 @@ impl CommandEncoder {
         }
     }
 
+    /// Records a full copy of mip 0 from `src` into `dst`.
+    ///
+    /// Both textures must share format and size; the debug layer reports
+    /// mismatches.
+    pub fn copy_texture(&mut self, dst: &Texture, src: &Texture) {
+        let dst_location = D3D12_TEXTURE_COPY_LOCATION {
+            pResource: borrow_interface(&dst.resource),
+            Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+            Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                SubresourceIndex: 0,
+            },
+        };
+        let src_location = D3D12_TEXTURE_COPY_LOCATION {
+            pResource: borrow_interface(&src.resource),
+            Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+            Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+                SubresourceIndex: 0,
+            },
+        };
+        unsafe {
+            self.list
+                .CopyTextureRegion(&dst_location, 0, 0, 0, &src_location, None);
+        }
+    }
+
     /// Records a copy from a placed footprint of `buffer` into mip 0 of
     /// `texture`.
     ///
@@ -1058,6 +1084,10 @@ pub struct TextureDesc {
     /// `D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL`; creating a DSV for a texture
     /// without it removes the device.
     pub depth_stencil: bool,
+    /// Allow unordered-access (storage) views. D3D12 requires
+    /// `D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS`; creating a UAV for a
+    /// texture without it removes the device.
+    pub unordered_access: bool,
 }
 
 impl TextureDesc {
@@ -1069,6 +1099,7 @@ impl TextureDesc {
             format,
             render_target: false,
             depth_stencil: false,
+            unordered_access: false,
         }
     }
 
@@ -1084,6 +1115,11 @@ impl TextureDesc {
 
     pub fn with_depth_stencil(mut self) -> Self {
         self.depth_stencil = true;
+        self
+    }
+
+    pub fn with_unordered_access(mut self) -> Self {
+        self.unordered_access = true;
         self
     }
 }
@@ -1172,12 +1208,18 @@ impl Device {
                 Quality: 0,
             },
             Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
-            Flags: if desc.render_target {
-                D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET
-            } else if desc.depth_stencil {
-                D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL
-            } else {
-                D3D12_RESOURCE_FLAG_NONE
+            Flags: {
+                let mut flags = D3D12_RESOURCE_FLAG_NONE;
+                if desc.render_target {
+                    flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+                }
+                if desc.depth_stencil {
+                    flags |= D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+                }
+                if desc.unordered_access {
+                    flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+                }
+                flags
             },
         };
         let mut resource: Option<ID3D12Resource> = None;
@@ -1664,6 +1706,44 @@ impl Device {
         unsafe {
             self.raw.CreateShaderResourceView(
                 &texture.resource,
+                Some(&desc),
+                heap.cpu_handle(range.start),
+            );
+        }
+        Ok(range)
+    }
+
+    /// Creates a 2D UAV over mip 0 of `texture` (storage texture).
+    ///
+    /// The texture must have been created with
+    /// [`TextureDesc::with_unordered_access`]; D3D12 removes the device on a UAV
+    /// created for a texture without the flag.
+    pub fn create_texture_uav(
+        &self,
+        heap: &DescriptorHeap,
+        texture: &Texture,
+    ) -> Result<DescriptorRange, Error> {
+        self.ensure_heap_type(heap, DescriptorHeapType::CbvSrvUav)?;
+        if !texture.desc().unordered_access {
+            return Err(Error::InvalidState(
+                "texture needs TextureDesc::with_unordered_access() for UAV views",
+            ));
+        }
+        let desc = D3D12_UNORDERED_ACCESS_VIEW_DESC {
+            Format: texture.format(),
+            ViewDimension: D3D12_UAV_DIMENSION_TEXTURE2D,
+            Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
+                Texture2D: D3D12_TEX2D_UAV {
+                    MipSlice: 0,
+                    PlaneSlice: 0,
+                },
+            },
+        };
+        let range = heap.allocate_one()?;
+        unsafe {
+            self.raw.CreateUnorderedAccessView(
+                &texture.resource,
+                None,
                 Some(&desc),
                 heap.cpu_handle(range.start),
             );
@@ -2333,6 +2413,23 @@ impl CommandEncoder {
         }
     }
 
+    /// Records a UAV barrier for a texture so UAV writes are visible to later
+    /// reads/copies.
+    pub fn uav_barrier_texture(&mut self, texture: &Texture) {
+        let barrier = D3D12_RESOURCE_BARRIER {
+            Type: D3D12_RESOURCE_BARRIER_TYPE_UAV,
+            Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
+            Anonymous: D3D12_RESOURCE_BARRIER_0 {
+                UAV: std::mem::ManuallyDrop::new(D3D12_RESOURCE_UAV_BARRIER {
+                    pResource: borrow_interface(&texture.resource),
+                }),
+            },
+        };
+        unsafe {
+            self.list.ResourceBarrier(&[barrier]);
+        }
+    }
+
     /// Records a UAV barrier so UAV writes are visible to later reads/copies.
     pub fn uav_barrier(&mut self, buffer: &Buffer) {
         let barrier = D3D12_RESOURCE_BARRIER {
@@ -2795,6 +2892,7 @@ impl Swapchain {
                     format: self.format,
                     render_target: true,
                     depth_stencil: false,
+                    unordered_access: false,
                 },
                 state: Cell::new(ResourceState::Present),
             };
@@ -4722,6 +4820,116 @@ fn main() -> @location(0) vec4<f32> {
             (hit - 2.0).abs() < 1e-4,
             "expected the ray to hit the triangle at t=2.0, got {hit}"
         );
+    }
+
+    #[test]
+    fn compute_shader_writes_texture_uav() {
+        let init = init_headless();
+        let device = &init.device;
+        let compiler = match ShaderCompiler::load() {
+            Ok(compiler) => compiler,
+            Err(err) => {
+                eprintln!("skipping texture UAV test: {err}");
+                return;
+            }
+        };
+        let dxil = compiler
+            .compile_hlsl(shader::COMPUTE_TEXTURE_WRITE_HLSL, "main", "cs_6_0")
+            .expect("storage texture shader");
+        let root = device
+            .create_compute_root_signature(&[RootDescriptorTable {
+                kind: DescriptorRangeKind::Uav,
+                count: 1,
+                base_shader_register: 0,
+            }])
+            .expect("root signature");
+        let pipeline = device
+            .create_compute_pipeline(&dxil, &root)
+            .expect("compute pipeline");
+
+        let size = 4u32;
+        let texture = device
+            .create_texture(
+                TextureDesc::new(size, size, DXGI_FORMAT_R8G8B8A8_UNORM).with_unordered_access(),
+            )
+            .expect("storage texture");
+        let heap = DescriptorHeap::new(device, DescriptorHeapType::CbvSrvUav, 4).expect("heap");
+        let uav = device
+            .create_texture_uav(&heap, &texture)
+            .expect("texture uav");
+
+        let mut encoder = device.record().expect("encoder");
+        encoder.transition_texture(&texture, ResourceState::UnorderedAccess);
+        encoder.set_descriptor_heap(&heap);
+        encoder.set_compute_pipeline(&pipeline);
+        encoder.set_compute_descriptor_table(0, &heap, uav);
+        encoder.dispatch([1, 1, 1]);
+        encoder.uav_barrier_texture(&texture);
+        encoder.transition_texture(&texture, ResourceState::CopySource);
+        let sp = device.submit(encoder).expect("submit");
+        device.wait(sp).expect("wait");
+        device
+            .check_device()
+            .expect("device alive after texture UAV write");
+
+        let pixels = device.read_texture(&texture).expect("readback");
+        for (index, pixel) in pixels.chunks_exact(4).enumerate() {
+            let x = (index as u32) % size;
+            let y = (index as u32) / size;
+            let expected = [
+                (((x as f32 + 0.5) / 4.0) * 255.0).round() as u8,
+                (((y as f32 + 0.5) / 4.0) * 255.0).round() as u8,
+                128,
+                255,
+            ];
+            for channel in 0..4 {
+                let delta = i32::from(pixel[channel]) - i32::from(expected[channel]);
+                assert!(
+                    delta.abs() <= 1,
+                    "texel {index} channel {channel}: got {}, expected {}",
+                    pixel[channel],
+                    expected[channel]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn copy_texture_to_texture() {
+        let init = init_headless();
+        let device = &init.device;
+        let size = 8u32;
+        let source = device
+            .create_texture(TextureDesc::new(size, size, DXGI_FORMAT_R8G8B8A8_UNORM))
+            .expect("source texture");
+        let texels: Vec<u8> = (0..size * size)
+            .flat_map(|index| [(index % 251) as u8, 0x40, 0x80, 0xFF])
+            .collect();
+        device
+            .upload_texture(&source, &texels)
+            .expect("upload source");
+        let destination = device
+            .create_texture(TextureDesc::new(size, size, DXGI_FORMAT_R8G8B8A8_UNORM))
+            .expect("destination texture");
+
+        let mut encoder = device.record().expect("encoder");
+        encoder.transition_texture(&source, ResourceState::CopySource);
+        encoder.transition_texture(&destination, ResourceState::CopyDest);
+        encoder.copy_texture(&destination, &source);
+        encoder.transition_texture(&destination, ResourceState::CopySource);
+        let sp = device.submit(encoder).expect("submit");
+        device.wait(sp).expect("wait");
+        device
+            .check_device()
+            .expect("device alive after texture copy");
+
+        let copied = device.read_texture(&destination).expect("readback");
+        let wrong = copied
+            .chunks_exact(4)
+            .zip(texels.chunks_exact(4))
+            .filter(|(copied, source)| copied != source)
+            .count();
+        assert_eq!(wrong, 0, "{wrong} texels differ after the copy");
     }
 
     #[test]
