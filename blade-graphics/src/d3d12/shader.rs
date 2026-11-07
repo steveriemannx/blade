@@ -133,6 +133,21 @@ PSOutput ps_main(VSOutput input) {
 }
 "#;
 
+/// WGSL version of the fullscreen-triangle shader pair used to exercise the
+/// WGSL -> HLSL -> DXIL path.
+pub const WGSL_FULLSCREEN: &str = r#"
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4<f32> {
+    let uv = vec2<f32>(f32((vertex_index << 1u) & 2u), f32(vertex_index & 2u));
+    return vec4<f32>(uv * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), 0.0, 1.0);
+}
+
+@fragment
+fn ps_main() -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0, 1.0, 0.0, 1.0);
+}
+"#;
+
 /// Trivial compute shader used by tests and examples: writes the dispatch
 /// thread id into the bound output buffer.
 pub const TRIVIAL_COMPUTE_HLSL: &str = r#"
@@ -181,6 +196,25 @@ impl ShaderCompiler {
             module,
             compiler: Some(compiler),
         })
+    }
+
+    /// Translates WGSL to HLSL for `entry`/`stage` without compiling it. Useful
+    /// for debugging generated code.
+    pub fn translate_wgsl(&self, wgsl: &str, entry: &str, stage: &str) -> Result<String, Error> {
+        let stage = super::wgsl::shader_stage(stage).ok_or(Error::InvalidState(
+            "unknown shader stage; expected vertex, fragment or compute",
+        ))?;
+        Ok(super::wgsl::wgsl_to_hlsl(wgsl, entry, stage)?.source)
+    }
+
+    /// Compiles WGSL to DXIL: WGSL -> HLSL (naga `hlsl-out`) -> DXIL (DXC).
+    pub fn compile_wgsl(&self, wgsl: &str, entry: &str, stage: &str) -> Result<Vec<u8>, Error> {
+        let stage = super::wgsl::shader_stage(stage).ok_or(Error::InvalidState(
+            "unknown shader stage; expected vertex, fragment or compute",
+        ))?;
+        let translation = super::wgsl::wgsl_to_hlsl(wgsl, entry, stage)?;
+        let target = super::wgsl::stage_target(stage);
+        self.compile_hlsl(&translation.source, &translation.entry_point, target)
     }
 
     /// Compiles HLSL `source` for `entry` (e.g. `"main"`) and `target`

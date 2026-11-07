@@ -19,6 +19,7 @@ use std::fmt;
 use std::ptr;
 
 pub mod shader;
+pub mod wgsl;
 pub mod window;
 
 pub use shader::ShaderCompiler;
@@ -4062,6 +4063,91 @@ mod tests {
         let recovered = init_with_options(&InitOptions::headless()).expect("new device after loss");
         assert!(!recovered.device.is_lost());
         assert_eq!(recovered.device.node_count(), 1);
+    }
+
+    #[test]
+    fn wgsl_shaders_render_fullscreen_triangle() {
+        let init = init_headless();
+        let device = &init.device;
+        let compiler = match ShaderCompiler::load() {
+            Ok(compiler) => compiler,
+            Err(err) => {
+                eprintln!("skipping WGSL test: {err}");
+                return;
+            }
+        };
+
+        // WGSL -> HLSL is observable, which makes this test fail loudly if the
+        // naga backend changes shape.
+        let hlsl = compiler
+            .translate_wgsl(shader::WGSL_FULLSCREEN, "vs_main", "vertex")
+            .expect("translate WGSL vertex shader");
+        assert!(
+            hlsl.contains("SV_Position"),
+            "generated HLSL should declare SV_Position, got:\n{hlsl}"
+        );
+
+        let vs = compiler
+            .compile_wgsl(shader::WGSL_FULLSCREEN, "vs_main", "vertex")
+            .expect("WGSL vertex shader");
+        let ps = compiler
+            .compile_wgsl(shader::WGSL_FULLSCREEN, "ps_main", "fragment")
+            .expect("WGSL fragment shader");
+        assert_eq!(&vs[..4], b"DXBC", "WGSL path should produce DXIL");
+        assert_eq!(&ps[..4], b"DXBC", "WGSL path should produce DXIL");
+
+        // Invalid WGSL reports as a shader-compile error with diagnostics.
+        let err = compiler
+            .compile_wgsl("this is not wgsl", "main", "vertex")
+            .expect_err("invalid WGSL must not compile");
+        assert!(matches!(err, Error::ShaderCompile(_)), "got {err:?}");
+
+        let root = device
+            .create_graphics_root_signature(&[])
+            .expect("root signature");
+        let pipeline = device
+            .create_render_pipeline(
+                &RenderPipelineDesc {
+                    vertex_dxil: &vs,
+                    pixel_dxil: &ps,
+                    color_formats: &[DXGI_FORMAT_R8G8B8A8_UNORM],
+                    vertex_attributes: &[],
+                    depth_format: None,
+                },
+                &root,
+            )
+            .expect("WGSL pipeline");
+
+        let (width, height) = (32u32, 32u32);
+        let texture = device
+            .create_texture(
+                TextureDesc::new(width, height, DXGI_FORMAT_R8G8B8A8_UNORM).with_render_target(),
+            )
+            .expect("color target");
+        let rtv_heap = DescriptorHeap::new(device, DescriptorHeapType::Rtv, 4).expect("rtv heap");
+        let rtv = device
+            .create_render_target_view(&rtv_heap, &texture)
+            .expect("rtv");
+
+        let mut encoder = device.record().expect("encoder");
+        encoder.transition_texture(&texture, ResourceState::RenderTarget);
+        encoder.set_render_targets(&rtv_heap, &[rtv]);
+        encoder.clear_render_target(&rtv_heap, rtv, [0.0, 0.0, 1.0, 1.0]);
+        encoder.set_render_pipeline(&pipeline);
+        encoder.set_viewport(width as f32, height as f32);
+        encoder.set_scissor(width as i32, height as i32);
+        encoder.draw_instanced(3, 1);
+        encoder.transition_texture(&texture, ResourceState::CopySource);
+        let sp = device.submit(encoder).expect("submit");
+        device.wait(sp).expect("wait");
+        device.check_device().expect("device alive after WGSL draw");
+
+        let pixels = device.read_texture(&texture).expect("readback");
+        let wrong = pixels
+            .chunks_exact(4)
+            .filter(|pixel| *pixel != [0u8, 255, 0, 255])
+            .count();
+        assert_eq!(wrong, 0, "{wrong} pixels are not the WGSL green");
     }
 
     #[test]
