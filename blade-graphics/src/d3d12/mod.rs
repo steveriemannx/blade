@@ -30,7 +30,8 @@ use windows::Win32::Graphics::Direct3D::{
 };
 use windows::Win32::Graphics::Direct3D12::{
     D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC, D3D12_COMMAND_QUEUE_FLAG_NONE,
-    D3D12_COMMAND_QUEUE_PRIORITY_NORMAL, D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_FENCE_FLAG_NONE,
+    D3D12_COMMAND_QUEUE_PRIORITY_NORMAL, D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+    D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT, D3D12_FENCE_FLAG_NONE, D3D12_HEAP_DESC,
     D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT, D3D12_HEAP_TYPE_READBACK,
     D3D12_HEAP_TYPE_UPLOAD, D3D12_MEMORY_POOL_UNKNOWN, D3D12_MESSAGE, D3D12_RANGE,
     D3D12_RESOURCE_BARRIER, D3D12_RESOURCE_BARRIER_0, D3D12_RESOURCE_BARRIER_FLAG_NONE,
@@ -43,8 +44,8 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_RESOURCE_TRANSITION_BARRIER, D3D12_RLDO_DETAIL, D3D12_RLDO_IGNORE_INTERNAL,
     D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12CreateDevice, D3D12GetDebugInterface,
     ID3D12CommandAllocator, ID3D12CommandList, ID3D12CommandQueue, ID3D12Debug, ID3D12DebugDevice,
-    ID3D12Device, ID3D12Device5, ID3D12Fence, ID3D12GraphicsCommandList, ID3D12InfoQueue,
-    ID3D12Resource,
+    ID3D12Device, ID3D12Device5, ID3D12Fence, ID3D12GraphicsCommandList, ID3D12Heap,
+    ID3D12InfoQueue, ID3D12Pageable, ID3D12Resource,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC,
@@ -768,25 +769,7 @@ impl Device {
             CreationNodeMask: 1,
             VisibleNodeMask: 1,
         };
-        let resource_desc = D3D12_RESOURCE_DESC {
-            Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
-            Alignment: 0,
-            Width: size,
-            Height: 1,
-            DepthOrArraySize: 1,
-            MipLevels: 1,
-            Format: DXGI_FORMAT_UNKNOWN,
-            SampleDesc: DXGI_SAMPLE_DESC {
-                Count: 1,
-                Quality: 0,
-            },
-            Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-            Flags: if desc.allow_unordered_access {
-                D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
-            } else {
-                D3D12_RESOURCE_FLAG_NONE
-            },
-        };
+        let resource_desc = buffer_resource_desc(size, desc.allow_unordered_access);
         let mut resource: Option<ID3D12Resource> = None;
         unsafe {
             if let Err(err) = self.raw.CreateCommittedResource(
@@ -2904,6 +2887,169 @@ impl Swapchain {
     }
 }
 
+/// Memory heap kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeapType {
+    /// GPU-local memory for placed buffers and textures.
+    Default,
+    /// CPU-writable, GPU-readable staging memory.
+    Upload,
+    /// CPU-readable, GPU-writable readback memory.
+    Readback,
+}
+
+impl HeapType {
+    fn heap_properties(self) -> D3D12_HEAP_PROPERTIES {
+        let ty = match self {
+            Self::Default => D3D12_HEAP_TYPE_DEFAULT,
+            Self::Upload => D3D12_HEAP_TYPE_UPLOAD,
+            Self::Readback => D3D12_HEAP_TYPE_READBACK,
+        };
+        D3D12_HEAP_PROPERTIES {
+            Type: ty,
+            CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+            MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
+            CreationNodeMask: 1,
+            VisibleNodeMask: 1,
+        }
+    }
+}
+
+/// A D3D12 heap with a 64 KiB-aligned bump allocator for placed resources.
+///
+/// The heap must outlive every resource placed into it, so keep the `Heap`
+/// alive as long as the buffers created from it.
+pub struct Heap {
+    raw: ID3D12Heap,
+    ty: HeapType,
+    size: u64,
+    allocated: Cell<u64>,
+}
+
+impl Heap {
+    /// Creates a heap of `size` bytes (rounded up to the 64 KiB placement
+    /// alignment).
+    pub fn new(device: &Device, ty: HeapType, size: u64) -> Result<Self, Error> {
+        if size == 0 {
+            return Err(Error::InvalidState("heap size must be non-zero"));
+        }
+        let alignment = u64::from(D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT);
+        let size = align_up(size, alignment);
+        let desc = D3D12_HEAP_DESC {
+            SizeInBytes: size,
+            Properties: ty.heap_properties(),
+            Alignment: alignment,
+            Flags: D3D12_HEAP_FLAG_NONE,
+        };
+        let mut heap: Option<ID3D12Heap> = None;
+        unsafe { device.raw.CreateHeap(&desc, &mut heap)? };
+        let raw = heap.ok_or(Error::InvalidState("CreateHeap returned no heap"))?;
+        Ok(Self {
+            raw,
+            ty,
+            size,
+            allocated: Cell::new(0),
+        })
+    }
+
+    pub fn ty(&self) -> HeapType {
+        self.ty
+    }
+
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    pub fn allocated(&self) -> u64 {
+        self.allocated.get()
+    }
+
+    pub fn remaining(&self) -> u64 {
+        self.size - self.allocated.get()
+    }
+
+    /// Bump-allocates a 64 KiB-aligned range, or returns `None` when full.
+    pub fn allocate(&self, size: u64) -> Option<u64> {
+        let alignment = u64::from(D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT);
+        let start = align_up(self.allocated.get(), alignment);
+        let end = start.checked_add(align_up(size.max(1), alignment))?;
+        if end > self.size {
+            return None;
+        }
+        self.allocated.set(end);
+        Some(start)
+    }
+}
+
+impl Device {
+    /// Creates a buffer placed at `offset` in `heap`.
+    pub fn create_placed_buffer(
+        &self,
+        heap: &Heap,
+        offset: u64,
+        desc: BufferDesc,
+    ) -> Result<Buffer, Error> {
+        if offset % u64::from(D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT) != 0 {
+            return Err(Error::InvalidState(
+                "placed resources need 64 KiB-aligned offsets",
+            ));
+        }
+        let size = align_up(desc.size, BUFFER_ALIGNMENT).max(BUFFER_ALIGNMENT);
+        if offset + size > heap.size {
+            return Err(Error::InvalidState("placed buffer exceeds the heap"));
+        }
+        let resource_desc = buffer_resource_desc(size, desc.allow_unordered_access);
+        let initial_state = desc.memory.initial_state();
+        let mut resource: Option<ID3D12Resource> = None;
+        unsafe {
+            if let Err(err) = self.raw.CreatePlacedResource(
+                &heap.raw,
+                offset,
+                &resource_desc,
+                initial_state.to_d3d12(),
+                None,
+                &mut resource,
+            ) {
+                return Err(self.map_device_error(err));
+            }
+        }
+        let resource = resource.ok_or(Error::InvalidState(
+            "CreatePlacedResource returned no resource",
+        ))?;
+        Ok(Buffer {
+            resource,
+            size,
+            memory: desc.memory,
+            state: Cell::new(initial_state),
+            allow_unordered_access: desc.allow_unordered_access,
+        })
+    }
+
+    /// Makes buffers resident (they are resident by default; this is for heaps
+    /// that were evicted).
+    pub fn make_resident(&self, objects: &[&Buffer]) -> Result<(), Error> {
+        let mut pageables: Vec<Option<ID3D12Pageable>> = Vec::with_capacity(objects.len());
+        for buffer in objects {
+            let pageable: ID3D12Pageable = buffer.resource.cast()?;
+            pageables.push(Some(pageable));
+        }
+        unsafe { self.raw.MakeResident(&pageables)? };
+        Ok(())
+    }
+
+    /// Evicts buffers from memory. Do not use them until they are resident
+    /// again.
+    pub fn evict(&self, objects: &[&Buffer]) -> Result<(), Error> {
+        let mut pageables: Vec<Option<ID3D12Pageable>> = Vec::with_capacity(objects.len());
+        for buffer in objects {
+            let pageable: ID3D12Pageable = buffer.resource.cast()?;
+            pageables.push(Some(pageable));
+        }
+        unsafe { self.raw.Evict(&pageables)? };
+        Ok(())
+    }
+}
+
 /// Kind of acceleration structure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AccelerationStructureKind {
@@ -3432,6 +3578,29 @@ fn describe_device_adapter(device: &ID3D12Device) -> Result<AdapterInfo, Error> 
 
 fn align_up(value: u64, alignment: u64) -> u64 {
     value.div_ceil(alignment) * alignment
+}
+
+/// `D3D12_RESOURCE_DESC` for a buffer of `size` bytes.
+fn buffer_resource_desc(size: u64, allow_unordered_access: bool) -> D3D12_RESOURCE_DESC {
+    D3D12_RESOURCE_DESC {
+        Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+        Alignment: 0,
+        Width: size,
+        Height: 1,
+        DepthOrArraySize: 1,
+        MipLevels: 1,
+        Format: DXGI_FORMAT_UNKNOWN,
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+        Flags: if allow_unordered_access {
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS
+        } else {
+            D3D12_RESOURCE_FLAG_NONE
+        },
+    }
 }
 
 /// A non-owning copy of a COM interface for `ManuallyDrop` struct fields.
@@ -4930,6 +5099,94 @@ fn main() -> @location(0) vec4<f32> {
             .filter(|(copied, source)| copied != source)
             .count();
         assert_eq!(wrong, 0, "{wrong} texels differ after the copy");
+    }
+
+    #[test]
+    fn placed_buffers_in_heap_round_trip() {
+        let init = init_headless();
+        let device = &init.device;
+
+        // 256 KiB device heap and 1 MiB upload heap.
+        let device_heap = Heap::new(device, HeapType::Default, 256 * 1024).expect("device heap");
+        let upload_heap = Heap::new(device, HeapType::Upload, 1024 * 1024).expect("upload heap");
+        assert_eq!(device_heap.ty(), HeapType::Default);
+        assert!(device_heap.size() >= 256 * 1024);
+        assert_eq!(device_heap.allocated(), 0);
+
+        let offset_a = device_heap.allocate(256).expect("range a");
+        let offset_b = device_heap.allocate(256).expect("range b");
+        assert_eq!(offset_a, 0);
+        assert_eq!(
+            offset_b,
+            u64::from(D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT)
+        );
+
+        let a = device
+            .create_placed_buffer(&device_heap, offset_a, BufferDesc::new(256, Memory::Device))
+            .expect("placed buffer a");
+        let b = device
+            .create_placed_buffer(&device_heap, offset_b, BufferDesc::new(256, Memory::Device))
+            .expect("placed buffer b");
+
+        // Stage the payload through the upload heap, also with a placed buffer.
+        let upload_offset = upload_heap.allocate(256).expect("upload range");
+        let upload = device
+            .create_placed_buffer(
+                &upload_heap,
+                upload_offset,
+                BufferDesc::new(256, Memory::Upload),
+            )
+            .expect("placed upload buffer");
+        let payload: Vec<u8> = (0..256).map(|index| (index % 251) as u8).collect();
+        upload.write(0, &payload).expect("write payload");
+        let readback = device
+            .create_buffer(BufferDesc::new(256, Memory::Readback))
+            .expect("readback buffer");
+
+        let mut encoder = device.record().expect("encoder");
+        encoder.transition_buffer(&a, ResourceState::CopyDest);
+        encoder.copy_buffer(&a, 0, &upload, 0, 256);
+        encoder.transition_buffer(&a, ResourceState::CopySource);
+        encoder.transition_buffer(&b, ResourceState::CopyDest);
+        encoder.copy_buffer(&b, 0, &a, 0, 256);
+        encoder.transition_buffer(&b, ResourceState::CopySource);
+        encoder.copy_buffer(&readback, 0, &b, 0, 256);
+        let sp = device.submit(encoder).expect("submit");
+        device.wait(sp).expect("wait");
+
+        let bytes = readback.read().expect("readback");
+        assert_eq!(&bytes[..256], &payload[..]);
+        assert_eq!(
+            device_heap.allocated(),
+            2 * u64::from(D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT)
+        );
+
+        // Residency: evict both placed buffers, make them resident again and
+        // read the data back through a second copy.
+        device.evict(&[&a, &b]).expect("evict");
+        device.make_resident(&[&a, &b]).expect("make resident");
+        device
+            .check_device()
+            .expect("device alive after residency churn");
+
+        let mut encoder = device.record().expect("encoder");
+        encoder.transition_buffer(&b, ResourceState::CopySource);
+        encoder.copy_buffer(&readback, 0, &b, 0, 256);
+        let sp = device.submit(encoder).expect("submit");
+        device.wait(sp).expect("wait");
+        let bytes = readback.read().expect("readback");
+        assert_eq!(&bytes[..256], &payload[..]);
+    }
+
+    #[test]
+    fn heap_allocation_exhausts() {
+        let init = init_headless();
+        let device = &init.device;
+        let heap = Heap::new(device, HeapType::Upload, 64 * 1024).expect("heap");
+        let alignment = u64::from(D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT);
+        assert_eq!(heap.allocate(alignment), Some(0));
+        assert!(heap.allocate(alignment).is_none(), "heap should be full");
+        assert_eq!(heap.remaining(), 0);
     }
 
     #[test]

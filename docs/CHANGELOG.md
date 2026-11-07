@@ -15,6 +15,7 @@ Changelog for *Blade* project
 - graphics: the Windows-only `d3d12` backend maps WGSL `@group(0)` resource bindings onto HLSL registers (uniform buffers to root constants, textures to SRV tables), so resource-bound WGSL shaders run; sampler bindings remain on the naga sampler-heap model and are not wired yet
 - graphics: the Windows-only `d3d12` backend adds DXR ray tracing — bottom/top-level acceleration structure builds, acceleration-structure SRVs and inline ray-query compute shaders (`cs_6_5`), verified by tracing a ray against a triangle on WARP; `raytracing_tier` reports adapter support
 - graphics: the Windows-only `d3d12` backend adds storage textures — `TextureDesc::with_unordered_access()`, 2D texture UAVs, whole-texture copies and texture UAV barriers; a compute shader writes a storage texture and a copy is verified texel by texel
+- graphics: the Windows-only `d3d12` backend adds explicit heaps and residency — 64 KiB bump allocator over `ID3D12Heap`, placed buffers via `CreatePlacedResource`, and `MakeResident`/`Evict`; the smoke example round-trips a placed buffer through the GPU and exercises eviction
 - render: retain SVGF history on frozen frames; vehicle diagnostic captures require `BLADE_CAPTURE_VEHICLE=1` even when running ignored tests
 - graphics: ray queries require macOS 13+ / iOS 16+ on Metal; compute limits report direct sampled-texture slots, and renderer resource tables account for Vulkan image descriptors
 - render: `GBufferViews::motion` is now `Rgba16Float`, with screen-space motion in XY and previous-hit distance in Z

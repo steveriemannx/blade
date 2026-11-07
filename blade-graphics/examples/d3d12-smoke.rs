@@ -14,7 +14,7 @@ fn device_smoke(
 ) -> Result<(), blade_graphics::d3d12::Error> {
     use blade_graphics::d3d12::{
         BufferDesc, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R32_FLOAT, DescriptorHeap,
-        DescriptorHeapType, Error, Memory, ResourceState, SamplerDesc, TextureDesc,
+        DescriptorHeapType, Error, Heap, HeapType, Memory, ResourceState, SamplerDesc, TextureDesc,
     };
 
     let init = blade_graphics::d3d12::init_with_options(options)?;
@@ -94,6 +94,45 @@ fn device_smoke(
         sampler_heap.capacity(),
         texture_srv.start,
         sampler.start,
+    );
+
+    // 4. Placed resources in explicit heaps, plus residency churn.
+    let device_heap = Heap::new(device, HeapType::Default, 256 * 1024)?;
+    let upload_heap = Heap::new(device, HeapType::Upload, 256 * 1024)?;
+    let placed_offset = device_heap.allocate(1024).expect("heap range");
+    let placed = device.create_placed_buffer(
+        &device_heap,
+        placed_offset,
+        BufferDesc::new(1024, Memory::Device),
+    )?;
+    let upload_offset = upload_heap.allocate(1024).expect("upload range");
+    let placed_upload = device.create_placed_buffer(
+        &upload_heap,
+        upload_offset,
+        BufferDesc::new(1024, Memory::Upload),
+    )?;
+    let placed_readback = device.create_buffer(BufferDesc::new(1024, Memory::Readback))?;
+    let placed_payload: Vec<u8> = (0..1024).map(|index| (index % 251) as u8).collect();
+    placed_upload.write(0, &placed_payload)?;
+    let mut encoder = device.record()?;
+    encoder.transition_buffer(&placed, ResourceState::CopyDest);
+    encoder.copy_buffer(&placed, 0, &placed_upload, 0, 1024);
+    encoder.transition_buffer(&placed, ResourceState::CopySource);
+    encoder.copy_buffer(&placed_readback, 0, &placed, 0, 1024);
+    let sp = device.submit(encoder)?;
+    device.wait(sp)?;
+    let placed_bytes = placed_readback.read()?;
+    if placed_bytes[..1024] != placed_payload[..] {
+        return Err(Error::InvalidState(
+            "placed buffer round-trip produced wrong data",
+        ));
+    }
+    device.evict(&[&placed])?;
+    device.make_resident(&[&placed])?;
+    println!(
+        "placed resources: heap {} KiB, {} KiB allocated, round-trip + evict/resident OK",
+        device_heap.size() / 1024,
+        device_heap.allocated() / 1024
     );
 
     device.wait_idle()?;
