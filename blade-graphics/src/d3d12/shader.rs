@@ -185,6 +185,42 @@ fn ps_main(input: VSOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
+/// DXR library: a ray-generation shader that traces one ray against the bound
+/// top-level acceleration structure, plus miss and closest-hit shaders, writing
+/// the hit distance into the output buffer.
+pub const RAY_TRACING_LIBRARY_HLSL: &str = r#"
+struct RayPayload {
+    float hit_t;
+};
+
+RaytracingAccelerationStructure g_tlas : register(t0);
+RWStructuredBuffer<float> g_output : register(u0);
+
+[shader("raygeneration")]
+void ray_gen() {
+    RayDesc ray;
+    ray.Origin = float3(0.0, 0.0, -2.0);
+    ray.Direction = float3(0.0, 0.0, 1.0);
+    ray.TMin = 0.0;
+    ray.TMax = 100.0;
+
+    RayPayload payload;
+    payload.hit_t = -1.0;
+    TraceRay(g_tlas, RAY_FLAG_NONE, 0xFF, 0, 0, 0, ray, payload);
+    g_output[0] = payload.hit_t;
+}
+
+[shader("miss")]
+void miss(inout RayPayload payload) {
+    payload.hit_t = -1.0;
+}
+
+[shader("closesthit")]
+void closest_hit(inout RayPayload payload, in BuiltInTriangleIntersectionAttributes attributes) {
+    payload.hit_t = RayTCurrent();
+}
+"#;
+
 /// Storage-texture compute shader: writes a gradient into an
 /// `RWTexture2D<float4>` bound at `u0`, one texel per thread.
 pub const COMPUTE_TEXTURE_WRITE_HLSL: &str = r#"
@@ -299,6 +335,16 @@ impl ShaderCompiler {
     /// On failure the [`Error::ShaderCompile`] payload carries the compiler
     /// diagnostics.
     pub fn compile_hlsl(&self, source: &str, entry: &str, target: &str) -> Result<Vec<u8>, Error> {
+        self.compile_hlsl_with_args(source, &["-E", entry, "-T", target])
+    }
+
+    /// Compiles an HLSL library (e.g. `lib_6_3` for DXR state objects), where
+    /// exports are declared with `[shader("...")]` attributes instead of `-E`.
+    pub fn compile_hlsl_library(&self, source: &str, target: &str) -> Result<Vec<u8>, Error> {
+        self.compile_hlsl_with_args(source, &["-T", target])
+    }
+
+    fn compile_hlsl_with_args(&self, source: &str, dxc_args: &[&str]) -> Result<Vec<u8>, Error> {
         let Some(compiler) = &self.compiler else {
             return Err(Error::ShaderToolchain(
                 "shader compiler was already dropped".to_string(),
@@ -313,7 +359,7 @@ impl ShaderCompiler {
 
         // DXC takes wide-string arguments; keep the backing buffers alive for
         // the duration of the call.
-        let args_wide: Vec<Vec<u16>> = ["-E", entry, "-T", target]
+        let args_wide: Vec<Vec<u16>> = dxc_args
             .iter()
             .map(|arg| {
                 OsStr::new(arg)

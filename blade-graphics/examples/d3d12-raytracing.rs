@@ -116,6 +116,108 @@ fn ray_tracing(
     Ok(())
 }
 
+#[cfg(windows)]
+fn ray_tracing_pipeline(
+    options: &blade_graphics::d3d12::InitOptions,
+) -> Result<(), blade_graphics::d3d12::Error> {
+    use blade_graphics::d3d12::{
+        BlasGeometry, BufferDesc, DescriptorHeap, DescriptorHeapType, DescriptorRangeKind, Error,
+        Memory, RayTracingPipelineDesc, ResourceState, RootDescriptorTable, ShaderCompiler,
+        TlasInstance, shader,
+    };
+
+    let init = blade_graphics::d3d12::init_with_options(options)?;
+    let device = &init.device;
+    let tier = device.raytracing_tier();
+    if tier < 11 {
+        eprintln!("ray-tracing pipelines need DXR tier 1.1; adapter reports {tier}; skipping");
+        return Ok(());
+    }
+    let compiler = ShaderCompiler::load()?;
+
+    let positions: [f32; 9] = [-1.0, -1.0, 0.0, 1.0, -1.0, 0.0, 0.0, 1.0, 0.0];
+    let vertex_bytes: Vec<u8> = positions.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let vertices =
+        device.create_buffer(BufferDesc::new(vertex_bytes.len() as u64, Memory::Upload))?;
+    vertices.write(0, &vertex_bytes)?;
+    let blas = device.create_bottom_level_acceleration_structure(&[BlasGeometry {
+        vertices: &vertices,
+        vertex_count: 3,
+        vertex_stride: 12,
+        indices: None,
+    }])?;
+    let tlas = device.create_top_level_acceleration_structure(&[TlasInstance {
+        transform: [
+            1.0, 0.0, 0.0, 0.0, //
+            0.0, 1.0, 0.0, 0.0, //
+            0.0, 0.0, 1.0, 0.0,
+        ],
+        blas: &blas,
+        instance_mask: 0xFF,
+    }])?;
+
+    let library = compiler.compile_hlsl_library(shader::RAY_TRACING_LIBRARY_HLSL, "lib_6_3")?;
+    eprintln!("state object: ray-tracing library {} bytes", library.len());
+    let global_root_signature = device.serialize_compute_root_signature(&[
+        RootDescriptorTable {
+            kind: DescriptorRangeKind::Srv,
+            count: 1,
+            base_shader_register: 0,
+        },
+        RootDescriptorTable {
+            kind: DescriptorRangeKind::Uav,
+            count: 1,
+            base_shader_register: 0,
+        },
+    ])?;
+    let pipeline = device.create_ray_tracing_pipeline(&RayTracingPipelineDesc {
+        dxil_library: &library,
+        global_root_signature: &global_root_signature,
+        hit_group: "hit_group",
+        closest_hit_shader: "closest_hit",
+        max_payload_size: 4,
+        max_attribute_size: 12,
+        max_recursion_depth: 1,
+    })?;
+    let table = device.create_shader_binding_table(
+        &[pipeline.shader_identifier("ray_gen")?],
+        &[pipeline.shader_identifier("miss")?],
+        &[pipeline.shader_identifier("hit_group")?],
+    )?;
+    eprintln!("shader binding table: {} bytes", table.buffer().size());
+
+    let output =
+        device.create_buffer(BufferDesc::new(4, Memory::Device).with_unordered_access())?;
+    let readback = device.create_buffer(BufferDesc::new(4, Memory::Readback))?;
+    let heap = DescriptorHeap::new(device, DescriptorHeapType::CbvSrvUav, 8)?;
+    let tlas_srv = device.create_acceleration_structure_srv(&heap, &tlas)?;
+    let output_uav = device.create_buffer_uav_structured(&heap, &output, 4)?;
+
+    let mut encoder = device.record()?;
+    encoder.transition_buffer(&output, ResourceState::UnorderedAccess);
+    encoder.set_descriptor_heap(&heap);
+    encoder.set_ray_tracing_pipeline(&pipeline);
+    encoder.set_compute_descriptor_table(0, &heap, tlas_srv);
+    encoder.set_compute_descriptor_table(1, &heap, output_uav);
+    encoder.dispatch_rays(&table, 1, 1, 1);
+    encoder.uav_barrier(&output);
+    encoder.transition_buffer(&output, ResourceState::CopySource);
+    encoder.copy_buffer(&readback, 0, &output, 0, 4);
+    let sp = device.submit(encoder)?;
+    device.wait(sp)?;
+    device.check_device()?;
+
+    let bytes = readback.read()?;
+    let hit = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    eprintln!("DispatchRays hit the triangle at t = {hit}");
+    if (hit - 2.0).abs() > 1e-4 {
+        return Err(Error::InvalidState(
+            "ray-tracing pipeline did not hit at the expected distance",
+        ));
+    }
+    Ok(())
+}
+
 fn main() {
     #[cfg(windows)]
     {
@@ -129,6 +231,10 @@ fn main() {
             eprintln!("== {label} ==");
             if let Err(err) = ray_tracing(&options) {
                 eprintln!("{label} ray tracing failed: {err}");
+                failed = true;
+            }
+            if let Err(err) = ray_tracing_pipeline(&options) {
+                eprintln!("{label} ray-tracing pipeline failed: {err}");
                 failed = true;
             }
         }
