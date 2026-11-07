@@ -135,6 +135,29 @@ fn device_smoke(
         device_heap.allocated() / 1024
     );
 
+    // 5. Placed texture in the same heap, uploaded and read back.
+    let texture_desc = TextureDesc::new(32, 32, DXGI_FORMAT_R8G8B8A8_UNORM);
+    let (texture_size, _alignment) = device.texture_allocation_size(&texture_desc)?;
+    let texture_offset = device_heap.allocate(texture_size).expect("texture range");
+    let placed_texture =
+        device.create_placed_texture(&device_heap, texture_offset, texture_desc)?;
+    let texels: Vec<u8> = (0..32u32 * 32)
+        .flat_map(|index| [(index % 251) as u8, 0x10, 0x20, 0xFF])
+        .collect();
+    device.upload_texture(&placed_texture, &texels)?;
+    let readback_texels = device.read_texture(&placed_texture)?;
+    if readback_texels != texels {
+        return Err(Error::InvalidState(
+            "placed texture round-trip produced wrong texels",
+        ));
+    }
+    println!(
+        "placed texture: {}x{} in {} KiB heap, upload + readback OK",
+        placed_texture.width(),
+        placed_texture.height(),
+        device_heap.size() / 1024
+    );
+
     device.wait_idle()?;
     Ok(())
 }

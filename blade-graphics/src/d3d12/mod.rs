@@ -1178,33 +1178,7 @@ impl Device {
             CreationNodeMask: 1,
             VisibleNodeMask: 1,
         };
-        let resource_desc = D3D12_RESOURCE_DESC {
-            Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
-            Alignment: 0,
-            Width: desc.width as u64,
-            Height: desc.height,
-            DepthOrArraySize: 1,
-            MipLevels: desc.mip_levels,
-            Format: desc.format,
-            SampleDesc: DXGI_SAMPLE_DESC {
-                Count: 1,
-                Quality: 0,
-            },
-            Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
-            Flags: {
-                let mut flags = D3D12_RESOURCE_FLAG_NONE;
-                if desc.render_target {
-                    flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-                }
-                if desc.depth_stencil {
-                    flags |= D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
-                }
-                if desc.unordered_access {
-                    flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-                }
-                flags
-            },
-        };
+        let resource_desc = texture_resource_desc(&desc);
         let mut resource: Option<ID3D12Resource> = None;
         unsafe {
             if let Err(err) = self.raw.CreateCommittedResource(
@@ -3025,6 +2999,61 @@ impl Device {
         })
     }
 
+    /// Required size and alignment of `desc` when placed in a heap.
+    pub fn texture_allocation_size(&self, desc: &TextureDesc) -> Result<(u64, u64), Error> {
+        let resource_desc = texture_resource_desc(desc);
+        let info = unsafe { self.raw.GetResourceAllocationInfo(0, &[resource_desc]) };
+        if info.SizeInBytes == 0 || info.SizeInBytes == u64::MAX {
+            return Err(Error::InvalidState(
+                "GetResourceAllocationInfo returned no size",
+            ));
+        }
+        Ok((info.SizeInBytes, info.Alignment))
+    }
+
+    /// Creates a texture placed at `offset` in `heap`.
+    ///
+    /// Use [`Device::texture_allocation_size`] to reserve a correctly sized and
+    /// aligned range first.
+    pub fn create_placed_texture(
+        &self,
+        heap: &Heap,
+        offset: u64,
+        desc: TextureDesc,
+    ) -> Result<Texture, Error> {
+        let (size, alignment) = self.texture_allocation_size(&desc)?;
+        if alignment > 1 && offset % alignment != 0 {
+            return Err(Error::InvalidState(
+                "placed texture offset does not respect the resource alignment",
+            ));
+        }
+        if offset + size > heap.size {
+            return Err(Error::InvalidState("placed texture exceeds the heap"));
+        }
+        let resource_desc = texture_resource_desc(&desc);
+        let mut resource: Option<ID3D12Resource> = None;
+        unsafe {
+            if let Err(err) = self.raw.CreatePlacedResource(
+                &heap.raw,
+                offset,
+                &resource_desc,
+                ResourceState::Common.to_d3d12(),
+                None,
+                &mut resource,
+            ) {
+                return Err(self.map_device_error(err));
+            }
+        }
+        let resource = resource.ok_or(Error::InvalidState(
+            "CreatePlacedResource returned no texture",
+        ))?;
+        Ok(Texture {
+            resource,
+            desc,
+            state: Cell::new(ResourceState::Common),
+        })
+    }
+
     /// Makes buffers resident (they are resident by default; this is for heaps
     /// that were evicted).
     pub fn make_resident(&self, objects: &[&Buffer]) -> Result<(), Error> {
@@ -3578,6 +3607,35 @@ fn describe_device_adapter(device: &ID3D12Device) -> Result<AdapterInfo, Error> 
 
 fn align_up(value: u64, alignment: u64) -> u64 {
     value.div_ceil(alignment) * alignment
+}
+
+/// `D3D12_RESOURCE_DESC` for a 2D texture.
+fn texture_resource_desc(desc: &TextureDesc) -> D3D12_RESOURCE_DESC {
+    let mut flags = D3D12_RESOURCE_FLAG_NONE;
+    if desc.render_target {
+        flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    }
+    if desc.depth_stencil {
+        flags |= D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+    }
+    if desc.unordered_access {
+        flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    }
+    D3D12_RESOURCE_DESC {
+        Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+        Alignment: 0,
+        Width: desc.width as u64,
+        Height: desc.height,
+        DepthOrArraySize: 1,
+        MipLevels: desc.mip_levels,
+        Format: desc.format,
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
+        Flags: flags,
+    }
 }
 
 /// `D3D12_RESOURCE_DESC` for a buffer of `size` bytes.
@@ -5187,6 +5245,108 @@ fn main() -> @location(0) vec4<f32> {
         assert_eq!(heap.allocate(alignment), Some(0));
         assert!(heap.allocate(alignment).is_none(), "heap should be full");
         assert_eq!(heap.remaining(), 0);
+    }
+
+    #[test]
+    fn placed_texture_renders_and_copies() {
+        let init = init_headless();
+        let device = &init.device;
+        let compiler = match ShaderCompiler::load() {
+            Ok(compiler) => compiler,
+            Err(err) => {
+                eprintln!("skipping placed texture test: {err}");
+                return;
+            }
+        };
+        let vs = compiler
+            .compile_hlsl(shader::FULLSCREEN_HLSL, "vs_main", "vs_6_0")
+            .expect("vertex shader");
+        let ps = compiler
+            .compile_hlsl(shader::FULLSCREEN_HLSL, "ps_main", "ps_6_0")
+            .expect("pixel shader");
+        let root = device
+            .create_graphics_root_signature(&[RootParameter::Constants {
+                shader_register: 0,
+                count: 4,
+            }])
+            .expect("root signature");
+        let pipeline = device
+            .create_render_pipeline(
+                &RenderPipelineDesc {
+                    vertex_dxil: &vs,
+                    pixel_dxil: &ps,
+                    color_formats: &[DXGI_FORMAT_R8G8B8A8_UNORM],
+                    vertex_attributes: &[],
+                    depth_format: None,
+                },
+                &root,
+            )
+            .expect("render pipeline");
+
+        let heap = Heap::new(device, HeapType::Default, 1024 * 1024).expect("heap");
+        let (size, alignment) = device
+            .texture_allocation_size(&TextureDesc::new(16, 16, DXGI_FORMAT_R8G8B8A8_UNORM))
+            .expect("allocation size");
+        assert!(size > 0 && alignment > 0);
+
+        let color_desc = TextureDesc::new(16, 16, DXGI_FORMAT_R8G8B8A8_UNORM).with_render_target();
+        let color_offset = heap.allocate(size).expect("color range");
+        let color = device
+            .create_placed_texture(&heap, color_offset, color_desc)
+            .expect("placed render target");
+        let copy_offset = heap.allocate(size).expect("copy range");
+        let copy = device
+            .create_placed_texture(
+                &heap,
+                copy_offset,
+                TextureDesc::new(16, 16, DXGI_FORMAT_R8G8B8A8_UNORM),
+            )
+            .expect("placed copy target");
+        assert_eq!(
+            heap.allocated(),
+            2 * align_up(size, u64::from(D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT))
+        );
+
+        let rtv_heap = DescriptorHeap::new(device, DescriptorHeapType::Rtv, 4).expect("rtv heap");
+        let rtv = device
+            .create_render_target_view(&rtv_heap, &color)
+            .expect("rtv");
+        let green = [0.0f32, 1.0, 0.0, 1.0];
+        let green_bits: Vec<u32> = green.iter().map(|channel| channel.to_bits()).collect();
+
+        let mut encoder = device.record().expect("encoder");
+        encoder.transition_texture(&color, ResourceState::RenderTarget);
+        encoder.set_render_targets(&rtv_heap, &[rtv]);
+        encoder.clear_render_target(&rtv_heap, rtv, [0.0, 0.0, 1.0, 1.0]);
+        encoder.set_render_pipeline(&pipeline);
+        encoder.set_viewport(16.0, 16.0);
+        encoder.set_scissor(16, 16);
+        encoder.set_graphics_root_constants(0, &green_bits);
+        encoder.draw_instanced(3, 1);
+        encoder.transition_texture(&color, ResourceState::CopySource);
+        encoder.transition_texture(&copy, ResourceState::CopyDest);
+        encoder.copy_texture(&copy, &color);
+        encoder.transition_texture(&copy, ResourceState::CopySource);
+        let sp = device.submit(encoder).expect("submit");
+        device.wait(sp).expect("wait");
+        device
+            .check_device()
+            .expect("device alive after placed textures");
+
+        let rendered = device.read_texture(&color).expect("readback rendered");
+        let copied = device.read_texture(&copy).expect("readback copy");
+        let wrong = rendered
+            .chunks_exact(4)
+            .filter(|pixel| *pixel != [0u8, 255, 0, 255])
+            .count();
+        assert_eq!(
+            wrong, 0,
+            "{wrong} pixels are not green in the placed render target"
+        );
+        assert_eq!(
+            rendered, copied,
+            "placed texture copy differs from the render"
+        );
     }
 
     #[test]
