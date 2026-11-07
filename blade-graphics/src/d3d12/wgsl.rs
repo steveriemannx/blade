@@ -4,9 +4,10 @@
 //! authored in WGSL, and D3D12 consumes DXIL. `hlsl-out` produces HLSL that
 //! [`super::ShaderCompiler`] hands to `dxcompiler.dll` for the second half.
 //!
-//! The binding map is intentionally empty for now: shaders without resource
-//! bindings translate directly, and resource bindings will be mapped onto HLSL
-//! registers when the HAL binding model is wired up.
+//! Resource bindings: WGSL `@group(0) @binding(N)` maps to HLSL register `N`
+//! (space 0) in the register class implied by the resource type, which matches
+//! the descriptor tables this backend builds. Other groups are rejected until
+//! register spaces are wired into the root signature.
 
 use std::cell::RefCell;
 use std::fmt;
@@ -64,6 +65,7 @@ pub fn wgsl_to_hlsl(
 
     let options = naga::back::hlsl::Options {
         shader_model: naga::back::hlsl::ShaderModel::V6_0,
+        binding_map: binding_map(&module)?,
         fake_missing_bindings: false,
         special_constants_binding: None,
         immediates_target: None,
@@ -94,6 +96,34 @@ pub fn wgsl_to_hlsl(
         entry_point: entry.to_owned(),
         stage,
     })
+}
+
+/// Maps WGSL bindings from group 0 onto HLSL registers in space 0.
+fn binding_map(module: &naga::Module) -> Result<naga::back::hlsl::BindingMap, Error> {
+    use naga::back::hlsl::{BindTarget, BindingMap};
+    let mut bindings = BindingMap::new();
+    for (_, global) in module.global_variables.iter() {
+        let Some(binding) = global.binding else {
+            continue;
+        };
+        if binding.group != 0 {
+            return Err(Error::ShaderCompile(format!(
+                "WGSL binding group {} is not supported yet (only group 0 maps onto registers)",
+                binding.group
+            )));
+        }
+        bindings.insert(
+            binding,
+            BindTarget {
+                space: 0,
+                register: binding.binding,
+                binding_array_size: None,
+                dynamic_storage_buffer_offsets_index: None,
+                restrict_indexing: false,
+            },
+        );
+    }
+    Ok(bindings)
 }
 
 struct StringSink(Rc<RefCell<String>>);

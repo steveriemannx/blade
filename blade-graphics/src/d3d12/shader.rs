@@ -148,6 +148,43 @@ fn ps_main() -> @location(0) vec4<f32> {
 }
 "#;
 
+/// WGSL textured quad: a uniform `float4` tint (root constants at `b0`) and a
+/// texture at `t1` (group 0 binding 1), sampled with `textureLoad` so the
+/// shader needs no sampler. Exercises the WGSL -> HLSL binding map.
+///
+/// Samplers are deliberately avoided: the workspace `naga` fork's HLSL backend
+/// models samplers as a dynamically indexed heap (the `wgpu-hal` dx12 model),
+/// which does not line up with this backend's static samplers yet. HLSL
+/// entry points still cover sampled textures.
+pub const WGSL_TEXTURED: &str = r#"
+struct Params {
+    color: vec4<f32>,
+};
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var source: texture_2d<f32>;
+
+struct VSOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VSOutput {
+    let uv = vec2<f32>(f32((vertex_index << 1u) & 2u), f32(vertex_index & 2u));
+    var output: VSOutput;
+    output.position = vec4<f32>(uv * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), 0.0, 1.0);
+    output.uv = uv;
+    return output;
+}
+
+@fragment
+fn ps_main(input: VSOutput) -> @location(0) vec4<f32> {
+    let dimensions = vec2<f32>(textureDimensions(source));
+    let texel = textureLoad(source, vec2<i32>(input.uv * dimensions), 0);
+    return texel * params.color;
+}
+"#;
+
 /// Trivial compute shader used by tests and examples: writes the dispatch
 /// thread id into the bound output buffer.
 pub const TRIVIAL_COMPUTE_HLSL: &str = r#"

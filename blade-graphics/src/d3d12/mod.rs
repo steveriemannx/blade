@@ -4151,6 +4151,147 @@ mod tests {
     }
 
     #[test]
+    fn wgsl_resource_bindings_sample_texture() {
+        let init = init_headless();
+        let device = &init.device;
+        let compiler = match ShaderCompiler::load() {
+            Ok(compiler) => compiler,
+            Err(err) => {
+                eprintln!("skipping WGSL binding test: {err}");
+                return;
+            }
+        };
+
+        // Bindings map onto registers: uniform -> b0, texture -> t1.
+        let fragment_hlsl = compiler
+            .translate_wgsl(shader::WGSL_TEXTURED, "ps_main", "fragment")
+            .expect("translate textured WGSL");
+        for expected in ["b0", "t1"] {
+            assert!(
+                fragment_hlsl.contains(expected),
+                "generated HLSL should bind {expected}:\n{fragment_hlsl}"
+            );
+        }
+
+        // Bind groups other than 0 are rejected with a clear message.
+        let other_group = r#"
+@group(1) @binding(0) var extra: texture_2d<f32>;
+@fragment
+fn main() -> @location(0) vec4<f32> {
+    return textureLoad(extra, vec2<i32>(0, 0), 0);
+}
+"#;
+        match compiler.translate_wgsl(other_group, "main", "fragment") {
+            Err(Error::ShaderCompile(message)) => {
+                assert!(message.contains("group 1"), "unexpected message: {message}")
+            }
+            other => panic!("expected a group-1 rejection, got {other:?}"),
+        }
+
+        let vs = compiler
+            .compile_wgsl(shader::WGSL_TEXTURED, "vs_main", "vertex")
+            .expect("WGSL vertex shader");
+        let ps = compiler
+            .compile_wgsl(shader::WGSL_TEXTURED, "ps_main", "fragment")
+            .expect("WGSL fragment shader");
+
+        let root = device
+            .create_graphics_root_signature_with_samplers(
+                &[
+                    RootParameter::Constants {
+                        shader_register: 0,
+                        count: 4,
+                    },
+                    RootParameter::DescriptorTable(RootDescriptorTable {
+                        kind: DescriptorRangeKind::Srv,
+                        count: 1,
+                        base_shader_register: 1,
+                    }),
+                ],
+                &[],
+            )
+            .expect("root signature");
+        let pipeline = device
+            .create_render_pipeline(
+                &RenderPipelineDesc {
+                    vertex_dxil: &vs,
+                    pixel_dxil: &ps,
+                    color_formats: &[DXGI_FORMAT_R8G8B8A8_UNORM],
+                    vertex_attributes: &[],
+                    depth_format: None,
+                },
+                &root,
+            )
+            .expect("WGSL textured pipeline");
+
+        let size = 8u32;
+        let texels: Vec<u8> = (0..size * size)
+            .flat_map(|index| {
+                let x = index % size;
+                let y = index / size;
+                [(x * 32) as u8, (y * 32) as u8, ((x + y) * 16) as u8, 255]
+            })
+            .collect();
+        let texture = device
+            .create_texture(TextureDesc::new(size, size, DXGI_FORMAT_R8G8B8A8_UNORM))
+            .expect("source texture");
+        device
+            .upload_texture(&texture, &texels)
+            .expect("upload source texture");
+        let target = device
+            .create_texture(
+                TextureDesc::new(size, size, DXGI_FORMAT_R8G8B8A8_UNORM).with_render_target(),
+            )
+            .expect("color target");
+        let rtv_heap = DescriptorHeap::new(device, DescriptorHeapType::Rtv, 4).expect("rtv heap");
+        let rtv = device
+            .create_render_target_view(&rtv_heap, &target)
+            .expect("rtv");
+        let srv_heap =
+            DescriptorHeap::new(device, DescriptorHeapType::CbvSrvUav, 4).expect("srv heap");
+        let srv = device
+            .create_texture_srv(&srv_heap, &texture)
+            .expect("texture srv");
+
+        let tint = 1.0f32.to_bits();
+        let mut encoder = device.record().expect("encoder");
+        encoder.transition_texture(&texture, ResourceState::ShaderRead);
+        encoder.transition_texture(&target, ResourceState::RenderTarget);
+        encoder.set_render_targets(&rtv_heap, &[rtv]);
+        encoder.clear_render_target(&rtv_heap, rtv, [0.0, 0.0, 0.0, 1.0]);
+        encoder.set_render_pipeline(&pipeline);
+        encoder.set_descriptor_heap(&srv_heap);
+        encoder.set_graphics_descriptor_table(1, &srv_heap, srv);
+        encoder.set_graphics_root_constants(0, &[tint, tint, tint, tint]);
+        encoder.set_viewport(size as f32, size as f32);
+        encoder.set_scissor(size as i32, size as i32);
+        encoder.draw_instanced(3, 1);
+        encoder.transition_texture(&target, ResourceState::CopySource);
+        let sp = device.submit(encoder).expect("submit");
+        device.wait(sp).expect("wait");
+        device
+            .check_device()
+            .expect("device alive after textured WGSL draw");
+
+        let pixels = device.read_texture(&target).expect("readback");
+        for (index, (sampled, source)) in pixels
+            .chunks_exact(4)
+            .zip(texels.chunks_exact(4))
+            .enumerate()
+        {
+            for channel in 0..3 {
+                let delta = i32::from(sampled[channel]) - i32::from(source[channel]);
+                assert!(
+                    delta.abs() <= 2,
+                    "texel {index} channel {channel}: sampled {}, expected {}",
+                    sampled[channel],
+                    source[channel]
+                );
+            }
+        }
+    }
+
+    #[test]
     fn repeated_submit_and_wait() {
         let init = init_headless();
         let device = &init.device;
