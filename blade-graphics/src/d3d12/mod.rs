@@ -14,15 +14,16 @@
 //!
 //! Enabled by the `d3d12` cargo feature on Windows only.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::ptr;
 
 pub mod shader;
+pub mod window;
 
 pub use shader::ShaderCompiler;
 
-use windows::Win32::Foundation::{CloseHandle, HANDLE, RECT, WAIT_OBJECT_0};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, RECT, WAIT_OBJECT_0};
 use windows::Win32::Graphics::Direct3D::{
     D3D_FEATURE_LEVEL, D3D_FEATURE_LEVEL_12_0, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST, ID3DBlob,
 };
@@ -30,22 +31,30 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC, D3D12_COMMAND_QUEUE_FLAG_NONE,
     D3D12_COMMAND_QUEUE_PRIORITY_NORMAL, D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_FENCE_FLAG_NONE,
     D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT, D3D12_HEAP_TYPE_READBACK,
-    D3D12_HEAP_TYPE_UPLOAD, D3D12_MEMORY_POOL_UNKNOWN, D3D12_RANGE, D3D12_RESOURCE_BARRIER,
-    D3D12_RESOURCE_BARRIER_0, D3D12_RESOURCE_BARRIER_FLAG_NONE,
+    D3D12_HEAP_TYPE_UPLOAD, D3D12_MEMORY_POOL_UNKNOWN, D3D12_MESSAGE, D3D12_RANGE,
+    D3D12_RESOURCE_BARRIER, D3D12_RESOURCE_BARRIER_0, D3D12_RESOURCE_BARRIER_FLAG_NONE,
     D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_DESC, D3D12_RESOURCE_DIMENSION_BUFFER,
     D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST,
-    D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_STATES,
-    D3D12_RESOURCE_TRANSITION_BARRIER, D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12CreateDevice,
-    D3D12GetDebugInterface, ID3D12CommandAllocator, ID3D12CommandList, ID3D12CommandQueue,
-    ID3D12Debug, ID3D12Device, ID3D12Fence, ID3D12GraphicsCommandList, ID3D12Resource,
+    D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_GENERIC_READ,
+    D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATES, D3D12_RESOURCE_TRANSITION_BARRIER,
+    D3D12_RLDO_DETAIL, D3D12_RLDO_IGNORE_INTERNAL, D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+    D3D12CreateDevice, D3D12GetDebugInterface, ID3D12CommandAllocator, ID3D12CommandList,
+    ID3D12CommandQueue, ID3D12Debug, ID3D12DebugDevice, ID3D12Device, ID3D12Fence,
+    ID3D12GraphicsCommandList, ID3D12InfoQueue, ID3D12Resource,
 };
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
+use windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC,
+};
 use windows::Win32::Graphics::Dxgi::{
-    CreateDXGIFactory2, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_CREATE_FACTORY_FLAGS,
-    DXGI_ERROR_NOT_FOUND, DXGI_GPU_PREFERENCE, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IDXGIAdapter1,
-    IDXGIDevice, IDXGIFactory6,
+    CreateDXGIFactory2, DXGI_ADAPTER_FLAG_SOFTWARE, DXGI_CREATE_FACTORY_DEBUG,
+    DXGI_CREATE_FACTORY_FLAGS, DXGI_DEBUG_ALL, DXGI_ERROR_NOT_FOUND, DXGI_GPU_PREFERENCE,
+    DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, DXGI_INFO_QUEUE_MESSAGE, DXGI_PRESENT,
+    DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1,
+    DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT, DXGI_SWAP_EFFECT_FLIP_DISCARD,
+    DXGI_USAGE_RENDER_TARGET_OUTPUT, DXGIGetDebugInterface1, IDXGIAdapter1, IDXGIDevice,
+    IDXGIFactory6, IDXGIInfoQueue, IDXGIOutput, IDXGISwapChain1, IDXGISwapChain2, IDXGISwapChain4,
 };
-use windows::core::{Error as WinError, Interface, PCWSTR};
+use windows::core::{Error as WinError, HRESULT, Interface, PCWSTR};
 
 // Phase 2: textures, descriptors and samplers.
 use windows::Win32::Graphics::Direct3D12::{
@@ -252,6 +261,8 @@ pub enum ResourceState {
     UnorderedAccess,
     /// Written by draw calls as a render target.
     RenderTarget,
+    /// Back-buffer state expected by DXGI when presenting.
+    Present,
 }
 
 impl ResourceState {
@@ -264,6 +275,7 @@ impl ResourceState {
             Self::ShaderRead => D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE,
             Self::UnorderedAccess => D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             Self::RenderTarget => D3D12_RESOURCE_STATE_RENDER_TARGET,
+            Self::Present => D3D12_RESOURCE_STATE_PRESENT,
         }
     }
 }
@@ -438,6 +450,12 @@ pub struct Device {
     fence: ID3D12Fence,
     fence_event: HANDLE,
     next_fence_value: Cell<u64>,
+    /// Command allocators still in use by submitted work, dropped once the
+    /// fence reaches their submission value. A command allocator holds
+    /// references to the resources recorded into its lists, so leaking it keeps
+    /// buffers alive and makes `ResizeBuffers` fail with
+    /// `DXGI_ERROR_INVALID_CALL`.
+    pending_allocators: RefCell<Vec<(u64, ID3D12CommandAllocator)>>,
     node_count: u32,
     debug_layer: bool,
 }
@@ -461,6 +479,7 @@ impl Device {
             fence,
             fence_event,
             next_fence_value: Cell::new(0),
+            pending_allocators: RefCell::new(Vec::new()),
             node_count,
             debug_layer,
         })
@@ -483,6 +502,95 @@ impl Device {
 
     pub fn has_debug_layer(&self) -> bool {
         self.debug_layer
+    }
+
+    /// Drains the debug layer's message queue (empty when the debug layer is
+    /// off). Call this after an API call fails to see what D3D12 objected to.
+    pub fn debug_messages(&self) -> Vec<String> {
+        let Ok(queue) = self.raw.cast::<ID3D12InfoQueue>() else {
+            return Vec::new();
+        };
+        let mut messages = Vec::new();
+        let count = unsafe { queue.GetNumStoredMessages() };
+        for index in 0..count {
+            let mut size = 0usize;
+            unsafe {
+                let _ = queue.GetMessage(index, None, &mut size);
+            }
+            if size == 0 {
+                continue;
+            }
+            let mut buffer = vec![0u8; size];
+            let message = buffer.as_mut_ptr() as *mut D3D12_MESSAGE;
+            if unsafe { queue.GetMessage(index, Some(message), &mut size) }.is_ok() {
+                let message = unsafe { &*message };
+                if message.pDescription.is_null() || message.DescriptionByteLength == 0 {
+                    continue;
+                }
+                let description = unsafe {
+                    std::slice::from_raw_parts(message.pDescription, message.DescriptionByteLength)
+                };
+                messages.push(
+                    String::from_utf8_lossy(description)
+                        .trim_end_matches(char::from(0))
+                        .to_string(),
+                );
+            }
+        }
+        unsafe {
+            queue.ClearStoredMessages();
+        }
+        messages
+    }
+
+    /// Drains the DXGI info queue (needs a factory created with
+    /// `DXGI_CREATE_FACTORY_DEBUG`, i.e. `BLADE_D3D12_DEBUG=1`).
+    pub fn dxgi_debug_messages(&self) -> Vec<String> {
+        let Ok(queue) = (unsafe { DXGIGetDebugInterface1::<IDXGIInfoQueue>(0) }) else {
+            return Vec::new();
+        };
+        let mut messages = Vec::new();
+        let count = unsafe { queue.GetNumStoredMessages(DXGI_DEBUG_ALL) };
+        for index in 0..count {
+            let mut size = 0usize;
+            unsafe {
+                let _ = queue.GetMessage(DXGI_DEBUG_ALL, index, None, &mut size);
+            }
+            if size == 0 {
+                continue;
+            }
+            let mut buffer = vec![0u8; size];
+            let message = buffer.as_mut_ptr() as *mut DXGI_INFO_QUEUE_MESSAGE;
+            if unsafe { queue.GetMessage(DXGI_DEBUG_ALL, index, Some(message), &mut size) }.is_ok()
+            {
+                let message = unsafe { &*message };
+                if message.pDescription.is_null() || message.DescriptionByteLength == 0 {
+                    continue;
+                }
+                let description = unsafe {
+                    std::slice::from_raw_parts(message.pDescription, message.DescriptionByteLength)
+                };
+                messages.push(
+                    String::from_utf8_lossy(description)
+                        .trim_end_matches(char::from(0))
+                        .to_string(),
+                );
+            }
+        }
+        unsafe {
+            queue.ClearStoredMessages(DXGI_DEBUG_ALL);
+        }
+        messages
+    }
+
+    /// Asks the debug layer to report every live object and its reference count
+    /// into the message queue (`Device::debug_messages` reads it back).
+    pub fn report_live_objects(&self) -> Result<(), Error> {
+        let debug_device: ID3D12DebugDevice = self.raw.cast()?;
+        unsafe {
+            debug_device.ReportLiveDeviceObjects(D3D12_RLDO_DETAIL | D3D12_RLDO_IGNORE_INTERNAL)?;
+        }
+        Ok(())
     }
 
     /// Fails if the device was removed (driver reset, invalid resource use,
@@ -580,10 +688,11 @@ impl Device {
             let value = self.next_fence_value.get() + 1;
             self.next_fence_value.set(value);
             self.queue.Signal(&self.fence, value)?;
-            // Keep the allocator alive until the GPU is done with it: dropping
-            // it now would be UB. Phase 1 leaks it into the queue's fence
-            // tracking; the allocator ring in phase 3 will own it properly.
-            std::mem::forget(encoder.allocator);
+            // The allocator must outlive the submitted work; `wait` releases it
+            // once the fence passes this value.
+            self.pending_allocators
+                .borrow_mut()
+                .push((value, encoder.allocator));
             Ok(SyncPoint { value })
         }
     }
@@ -600,6 +709,9 @@ impl Device {
                 ));
             }
         }
+        self.pending_allocators
+            .borrow_mut()
+            .retain(|(value, _)| *value > sp.value);
         Ok(())
     }
 
@@ -618,6 +730,7 @@ impl Drop for Device {
     fn drop(&mut self) {
         // Best effort: let the GPU finish before tearing the objects down.
         let _ = self.wait_idle();
+        self.pending_allocators.borrow_mut().clear();
         unsafe {
             let _ = CloseHandle(self.fence_event);
         }
@@ -666,7 +779,7 @@ impl CommandEncoder {
             Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
             Anonymous: D3D12_RESOURCE_BARRIER_0 {
                 Transition: std::mem::ManuallyDrop::new(D3D12_RESOURCE_TRANSITION_BARRIER {
-                    pResource: std::mem::ManuallyDrop::new(Some(resource.clone())),
+                    pResource: borrow_interface(resource),
                     Subresource: 0,
                     StateBefore: before.to_d3d12(),
                     StateAfter: after.to_d3d12(),
@@ -710,14 +823,14 @@ impl CommandEncoder {
         footprint: &D3D12_PLACED_SUBRESOURCE_FOOTPRINT,
     ) {
         let dst = D3D12_TEXTURE_COPY_LOCATION {
-            pResource: std::mem::ManuallyDrop::new(Some(texture.resource.clone())),
+            pResource: borrow_interface(&texture.resource),
             Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
             Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
                 SubresourceIndex: 0,
             },
         };
         let src = D3D12_TEXTURE_COPY_LOCATION {
-            pResource: std::mem::ManuallyDrop::new(Some(buffer.resource.clone())),
+            pResource: borrow_interface(&buffer.resource),
             Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
             Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
                 PlacedFootprint: *footprint,
@@ -739,14 +852,14 @@ impl CommandEncoder {
         footprint: &D3D12_PLACED_SUBRESOURCE_FOOTPRINT,
     ) {
         let dst = D3D12_TEXTURE_COPY_LOCATION {
-            pResource: std::mem::ManuallyDrop::new(Some(buffer.resource.clone())),
+            pResource: borrow_interface(&buffer.resource),
             Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
             Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
                 PlacedFootprint: *footprint,
             },
         };
         let src = D3D12_TEXTURE_COPY_LOCATION {
-            pResource: std::mem::ManuallyDrop::new(Some(texture.resource.clone())),
+            pResource: borrow_interface(&texture.resource),
             Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
             Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
                 SubresourceIndex: 0,
@@ -1676,7 +1789,7 @@ impl Device {
         let mut rtv_formats = [DXGI_FORMAT_UNKNOWN; 8];
         rtv_formats[0] = desc.color_format;
         let pipeline_desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
-            pRootSignature: std::mem::ManuallyDrop::new(Some(root_signature.raw.clone())),
+            pRootSignature: borrow_interface(&root_signature.raw),
             VS: shader_bytecode(desc.vertex_dxil),
             PS: shader_bytecode(desc.pixel_dxil),
             DS: D3D12_SHADER_BYTECODE {
@@ -1739,7 +1852,7 @@ impl Device {
             return Err(Error::InvalidState("compute shader bytecode is empty"));
         }
         let desc = D3D12_COMPUTE_PIPELINE_STATE_DESC {
-            pRootSignature: std::mem::ManuallyDrop::new(Some(root_signature.raw.clone())),
+            pRootSignature: borrow_interface(&root_signature.raw),
             CS: D3D12_SHADER_BYTECODE {
                 pShaderBytecode: dxil.as_ptr() as *const core::ffi::c_void,
                 BytecodeLength: dxil.len(),
@@ -1802,7 +1915,7 @@ impl CommandEncoder {
             Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
             Anonymous: D3D12_RESOURCE_BARRIER_0 {
                 UAV: std::mem::ManuallyDrop::new(D3D12_RESOURCE_UAV_BARRIER {
-                    pResource: std::mem::ManuallyDrop::new(Some(buffer.resource.clone())),
+                    pResource: borrow_interface(&buffer.resource),
                 }),
             },
         };
@@ -1904,6 +2017,276 @@ fn blob_to_string(blob: &ID3DBlob) -> String {
     String::from_utf8_lossy(bytes).trim_end().to_string()
 }
 
+/// Result of [`Swapchain::present`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PresentStatus {
+    /// The frame was queued for display.
+    Presented,
+    /// `DXGI_STATUS_OCCLUDED`: the window is not visible; skip rendering until
+    /// it is.
+    Occluded,
+}
+
+/// `DXGI_STATUS_OCCLUDED` is a success code and is not exposed by the `windows`
+/// crate, so spell it out.
+const DXGI_STATUS_OCCLUDED: HRESULT = HRESULT(0x087A0001);
+
+/// A flip-model DXGI swapchain plus its back-buffer render targets.
+///
+/// The back buffers are exposed as [`Texture`]s so the rest of the device layer
+/// treats them like any other render target. Expected frame loop:
+///
+/// 1. `acquire()` waits on the frame-latency handle and returns the frame index.
+/// 2. Transition the back buffer to [`ResourceState::RenderTarget`] and render.
+/// 3. Transition it back to [`ResourceState::Present`].
+/// 4. `present()`.
+pub struct Swapchain {
+    raw: IDXGISwapChain4,
+    format: DXGI_FORMAT,
+    size: (u32, u32),
+    waitable: HANDLE,
+    rtv_heap: DescriptorHeap,
+    rtvs: Vec<DescriptorRange>,
+    buffers: Vec<Texture>,
+}
+
+/// A frame handed out by [`Swapchain::acquire`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Frame {
+    index: u32,
+}
+
+impl Frame {
+    pub fn index(self) -> u32 {
+        self.index
+    }
+}
+
+impl Device {
+    /// Creates a flip-model swapchain for `window` and render-target views for
+    /// its back buffers.
+    ///
+    /// Frames are paced by `DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT`
+    /// with a maximum latency of 2, and `Present` uses sync interval 1.
+    pub fn create_swapchain(
+        &self,
+        factory: &IDXGIFactory6,
+        window: HWND,
+        size: (u32, u32),
+        format: DXGI_FORMAT,
+    ) -> Result<Swapchain, Error> {
+        if size.0 == 0 || size.1 == 0 {
+            return Err(Error::InvalidState("swapchain size must be non-zero"));
+        }
+        let desc = swapchain_desc(size, format);
+        let chain: IDXGISwapChain1 = unsafe {
+            factory.CreateSwapChainForHwnd(
+                &self.queue,
+                window,
+                &desc,
+                None,
+                None::<&IDXGIOutput>,
+            )?
+        };
+        self.finish_swapchain(chain, size, format)
+    }
+
+    /// Creates a composition swapchain (`CreateSwapChainForComposition`).
+    ///
+    /// Unlike an HWND swapchain, this one does not need a desktop session, so
+    /// the swapchain code path can be tested headlessly. Bind the swapchain to
+    /// a DirectComposition visual to actually display it.
+    pub fn create_swapchain_for_composition(
+        &self,
+        factory: &IDXGIFactory6,
+        size: (u32, u32),
+        format: DXGI_FORMAT,
+    ) -> Result<Swapchain, Error> {
+        if size.0 == 0 || size.1 == 0 {
+            return Err(Error::InvalidState("swapchain size must be non-zero"));
+        }
+        let desc = swapchain_desc(size, format);
+        let chain: IDXGISwapChain1 = unsafe {
+            factory.CreateSwapChainForComposition(&self.queue, &desc, None::<&IDXGIOutput>)?
+        };
+        self.finish_swapchain(chain, size, format)
+    }
+
+    fn finish_swapchain(
+        &self,
+        chain: IDXGISwapChain1,
+        size: (u32, u32),
+        format: DXGI_FORMAT,
+    ) -> Result<Swapchain, Error> {
+        let chain2: IDXGISwapChain2 = chain.cast()?;
+        unsafe { chain2.SetMaximumFrameLatency(2)? };
+        let waitable = unsafe { chain2.GetFrameLatencyWaitableObject() };
+
+        let mut swapchain = Swapchain {
+            raw: chain.cast()?,
+            format,
+            size,
+            waitable,
+            rtv_heap: DescriptorHeap::new(self, DescriptorHeapType::Rtv, 8)?,
+            rtvs: Vec::new(),
+            buffers: Vec::new(),
+        };
+        swapchain.build_back_buffers(self)?;
+        Ok(swapchain)
+    }
+}
+
+/// Describes a 2-buffer flip-discard swapchain with frame-latency pacing.
+fn swapchain_desc(size: (u32, u32), format: DXGI_FORMAT) -> DXGI_SWAP_CHAIN_DESC1 {
+    DXGI_SWAP_CHAIN_DESC1 {
+        Width: size.0,
+        Height: size.1,
+        Format: format,
+        Stereo: false.into(),
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
+        BufferCount: 2,
+        Scaling: DXGI_SCALING_STRETCH,
+        SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
+        AlphaMode: DXGI_ALPHA_MODE_IGNORE,
+        Flags: DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0 as u32,
+    }
+}
+
+impl Swapchain {
+    pub fn size(&self) -> (u32, u32) {
+        self.size
+    }
+
+    pub fn format(&self) -> DXGI_FORMAT {
+        self.format
+    }
+
+    /// The heap holding the back-buffer render-target views.
+    pub fn rtv_heap(&self) -> &DescriptorHeap {
+        &self.rtv_heap
+    }
+
+    /// The frame-latency waitable handle, for callers that wait themselves.
+    pub fn frame_latency_waitable(&self) -> HANDLE {
+        self.waitable
+    }
+
+    /// Waits for the frame-latency handle and returns the back buffer to render
+    /// into.
+    pub fn acquire(&mut self) -> Result<Frame, Error> {
+        self.wait_for_frame_latency()?;
+        let index = unsafe { self.raw.GetCurrentBackBufferIndex() };
+        Ok(Frame { index })
+    }
+
+    /// Waits for the frame-latency handle with a bounded timeout: a hidden or
+    /// stalled presentation engine must not hang the caller forever.
+    fn wait_for_frame_latency(&self) -> Result<(), Error> {
+        const TIMEOUT_MS: u32 = 5_000;
+        let result = unsafe { WaitForSingleObject(self.waitable, TIMEOUT_MS) };
+        if result != WAIT_OBJECT_0 {
+            return Err(Error::InvalidState(
+                "timed out waiting for the frame-latency handle",
+            ));
+        }
+        Ok(())
+    }
+
+    /// The texture of frame `frame`.
+    pub fn texture(&self, frame: Frame) -> &Texture {
+        &self.buffers[frame.index as usize]
+    }
+
+    /// The render-target view of frame `frame`.
+    pub fn render_target(&self, frame: Frame) -> DescriptorRange {
+        self.rtvs[frame.index as usize]
+    }
+
+    /// Presents the frame in `frame`.
+    ///
+    /// The back buffer must already be transitioned back to
+    /// [`ResourceState::Present`].
+    pub fn present(&mut self) -> Result<PresentStatus, Error> {
+        let result = unsafe { self.raw.Present(1, DXGI_PRESENT(0)) };
+        if result == DXGI_STATUS_OCCLUDED {
+            return Ok(PresentStatus::Occluded);
+        }
+        result.ok()?;
+        Ok(PresentStatus::Presented)
+    }
+
+    /// Resizes the swapchain's back buffers and recreates their views.
+    ///
+    /// DXGI refuses to resize while the GPU or the presentation engine still
+    /// holds references to the back buffers, so this drains the queue and waits
+    /// on the frame-latency handle before calling `ResizeBuffers`.
+    pub fn resize(&mut self, device: &Device, size: (u32, u32)) -> Result<(), Error> {
+        if size.0 == 0 || size.1 == 0 {
+            return Err(Error::InvalidState("swapchain size must be non-zero"));
+        }
+        device.wait_idle()?;
+        // Wait for the last presented frame to be consumed by the presentation
+        // engine; otherwise ResizeBuffers reports DXGI_ERROR_INVALID_CALL.
+        // A hidden window never consumes frames, so surface a timeout instead
+        // of blocking forever.
+        self.wait_for_frame_latency()?;
+        // Every view and reference has to go before DXGI can resize.
+        self.rtvs.clear();
+        self.buffers.clear();
+        self.rtv_heap.reset();
+        let resize_result = unsafe {
+            self.raw.ResizeBuffers(
+                0,
+                size.0,
+                size.1,
+                self.format,
+                DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT,
+            )
+        };
+        if let Err(err) = &resize_result {
+            // Surface why DXGI refused: usually an outstanding back-buffer
+            // reference, which is much easier to find with the debug layer on.
+            let _ = device.report_live_objects();
+            for message in device.debug_messages() {
+                log::error!("D3D12: {message}");
+            }
+            for message in device.dxgi_debug_messages() {
+                log::error!("DXGI: {message}");
+            }
+            log::error!("D3D12: ResizeBuffers to {size:?} failed: {err}");
+        }
+        resize_result?;
+        self.size = size;
+        self.build_back_buffers(device)
+    }
+
+    fn build_back_buffers(&mut self, device: &Device) -> Result<(), Error> {
+        let count = unsafe { self.raw.GetDesc1()? }.BufferCount;
+        for index in 0..count {
+            let resource: ID3D12Resource = unsafe { self.raw.GetBuffer(index)? };
+            let texture = Texture {
+                resource,
+                desc: TextureDesc {
+                    width: self.size.0,
+                    height: self.size.1,
+                    mip_levels: 1,
+                    format: self.format,
+                    render_target: true,
+                },
+                state: Cell::new(ResourceState::Present),
+            };
+            let rtv = device.create_render_target_view(&self.rtv_heap, &texture)?;
+            self.buffers.push(texture);
+            self.rtvs.push(rtv);
+        }
+        Ok(())
+    }
+}
+
 /// Result of a successful [`init`] call.
 pub struct Init {
     pub factory: IDXGIFactory6,
@@ -1948,7 +2331,19 @@ pub fn init_with_options(options: &InitOptions) -> Result<Init, Error> {
     // whether it actually came up: `Device::has_debug_layer` must not lie.
     let debug_layer = options.enable_debug_layer && enable_debug_layer();
 
-    let factory: IDXGIFactory6 = unsafe { CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0))? };
+    // A debug factory feeds the DXGI info queue; fall back to a normal factory
+    // when the debug interface is not installed.
+    let factory: IDXGIFactory6 = if debug_layer {
+        match unsafe { CreateDXGIFactory2(DXGI_CREATE_FACTORY_DEBUG) } {
+            Ok(factory) => factory,
+            Err(err) => {
+                log::warn!("D3D12: debug DXGI factory unavailable ({err})");
+                unsafe { CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0))? }
+            }
+        }
+    } else {
+        unsafe { CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0))? }
+    };
 
     if options.force_warp {
         return init_warp(factory, debug_layer);
@@ -2131,6 +2526,20 @@ fn describe_device_adapter(device: &ID3D12Device) -> Result<AdapterInfo, Error> 
 
 fn align_up(value: u64, alignment: u64) -> u64 {
     value.div_ceil(alignment) * alignment
+}
+
+/// A non-owning copy of a COM interface for `ManuallyDrop` struct fields.
+///
+/// The D3D12 structs hold resources and interfaces in `ManuallyDrop` because the
+/// runtime only borrows them for the duration of the call. Cloning them would
+/// `AddRef`, and because the field is never dropped (by design) that reference
+/// would leak. Leaking a reference to a swapchain back buffer is exactly what
+/// makes `ResizeBuffers` fail with `DXGI_ERROR_INVALID_CALL`, so pass a borrowed
+/// copy and let the caller's own reference keep the object alive.
+fn borrow_interface<T: Interface>(value: &T) -> std::mem::ManuallyDrop<Option<T>> {
+    // Bitwise copy of the interface wrapper without `AddRef`; `ManuallyDrop`
+    // keeps the copy from calling `Release`, so the count stays unchanged.
+    std::mem::ManuallyDrop::new(Some(unsafe { std::ptr::read(value) }))
 }
 
 #[cfg(test)]
@@ -2440,6 +2849,88 @@ mod tests {
             .filter(|pixel| *pixel != [0u8, 255, 0, 255])
             .count();
         assert_eq!(wrong, 0, "{wrong} pixels were not the drawn green");
+    }
+
+    fn exercise_swapchain(device: &Device, swapchain: &mut Swapchain) {
+        let frame = swapchain.acquire().expect("acquire");
+        let texture = swapchain.texture(frame);
+        let rtv = swapchain.render_target(frame);
+        let mut encoder = device.record().expect("encoder");
+        encoder.transition_texture(texture, ResourceState::RenderTarget);
+        encoder.clear_render_target(swapchain.rtv_heap(), rtv, [1.0, 0.0, 0.0, 1.0]);
+        encoder.transition_texture(texture, ResourceState::CopySource);
+        let sp = device.submit(encoder).expect("submit");
+        device.wait(sp).expect("wait");
+
+        let pixels = device.read_texture(texture).expect("back-buffer readback");
+        assert_eq!(&pixels[..4], &[255, 0, 0, 255], "back buffer clear color");
+
+        let mut encoder = device.record().expect("encoder");
+        encoder.transition_texture(texture, ResourceState::Present);
+        let sp = device.submit(encoder).expect("submit");
+        device.wait(sp).expect("wait");
+        let status = swapchain.present().expect("present");
+        assert!(matches!(
+            status,
+            PresentStatus::Presented | PresentStatus::Occluded
+        ));
+        device.check_device().expect("device alive after present");
+    }
+
+    /// `DXGI_ERROR_NOT_CURRENTLY_AVAILABLE`: HWND swapchains need an
+    /// interactive desktop session, which SSH sessions do not provide.
+    fn is_dxgi_not_currently_available(err: &Error) -> bool {
+        matches!(err, Error::Windows(inner) if inner.code().0 == 0x887A0022u32 as i32)
+    }
+
+    #[test]
+    fn swapchain_renders_presents_and_resizes() {
+        let init = init_headless();
+        let device = &init.device;
+
+        // Prefer an HWND swapchain; SSH sessions cannot create one, so fall back
+        // to a composition swapchain, which also exercises the flip/present path.
+        let window = window::HiddenWindow::new("blade-d3d12-swapchain-test", 128, 64)
+            .expect("hidden window");
+        let mut swapchain = match device.create_swapchain(
+            &init.factory,
+            window.hwnd(),
+            (128, 64),
+            DXGI_FORMAT_R8G8B8A8_UNORM,
+        ) {
+            Ok(swapchain) => {
+                // A hidden window never consumes frames, and DXGI then refuses
+                // to resize; show it so the presentation engine runs.
+                window.show();
+                swapchain
+            }
+            Err(err) if is_dxgi_not_currently_available(&err) => {
+                eprintln!("HWND swapchain unavailable ({err}); using composition swapchain");
+                match device.create_swapchain_for_composition(
+                    &init.factory,
+                    (128, 64),
+                    DXGI_FORMAT_R8G8B8A8_UNORM,
+                ) {
+                    Ok(swapchain) => swapchain,
+                    Err(err) => {
+                        eprintln!("skipping swapchain test: {err}");
+                        return;
+                    }
+                }
+            }
+            Err(err) => panic!("swapchain creation failed: {err}"),
+        };
+        assert_eq!(swapchain.size(), (128, 64));
+
+        exercise_swapchain(device, &mut swapchain);
+
+        // Resize recreates the back buffers and views; render and present again.
+        swapchain.resize(device, (64, 32)).expect("resize");
+        assert_eq!(swapchain.size(), (64, 32));
+        exercise_swapchain(device, &mut swapchain);
+        device
+            .check_device()
+            .expect("device alive after resize/present");
     }
 
     #[test]
