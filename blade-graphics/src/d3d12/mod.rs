@@ -42,7 +42,8 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_RESOURCE_TRANSITION_BARRIER, D3D12_RLDO_DETAIL, D3D12_RLDO_IGNORE_INTERNAL,
     D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12CreateDevice, D3D12GetDebugInterface,
     ID3D12CommandAllocator, ID3D12CommandList, ID3D12CommandQueue, ID3D12Debug, ID3D12DebugDevice,
-    ID3D12Device, ID3D12Fence, ID3D12GraphicsCommandList, ID3D12InfoQueue, ID3D12Resource,
+    ID3D12Device, ID3D12Device5, ID3D12Fence, ID3D12GraphicsCommandList, ID3D12InfoQueue,
+    ID3D12Resource,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC,
@@ -208,6 +209,10 @@ pub enum Error {
     ShaderToolchain(String),
     /// Root signature serialization failed; the payload holds the diagnostics.
     RootSignature(String),
+    /// The device was removed (driver reset/TDR, debug-layer `RemoveDevice`,
+    /// invalid resource use, ...). The payload is the `GetDeviceRemovedReason`
+    /// code.
+    DeviceLost(i32),
     /// A DXGI/D3D12 call failed.
     Windows(WinError),
 }
@@ -226,6 +231,9 @@ impl fmt::Display for Error {
             Self::ShaderToolchain(reason) => write!(f, "DXC toolchain unavailable: {reason}"),
             Self::RootSignature(diagnostics) => {
                 write!(f, "root signature serialization failed:\n{diagnostics}")
+            }
+            Self::DeviceLost(reason) => {
+                write!(f, "device removed (reason 0x{:08X})", *reason as u32)
             }
             Self::Windows(err) => write!(f, "D3D12 call failed: {err}"),
         }
@@ -461,6 +469,42 @@ impl SyncPoint {
     }
 }
 
+/// Cache hit/miss counters for root-signature and pipeline creation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PipelineCacheStats {
+    pub hits: u64,
+    pub misses: u64,
+}
+
+#[derive(Default)]
+struct PipelineCache {
+    root_signatures: std::collections::HashMap<u64, (u64, ID3D12RootSignature)>,
+    compute_pipelines: std::collections::HashMap<u64, (u64, ID3D12PipelineState)>,
+    render_pipelines: std::collections::HashMap<u64, (u64, ID3D12PipelineState)>,
+    hits: u64,
+    misses: u64,
+}
+
+/// FNV-1a, used to key the pipeline cache without pulling in a hasher crate.
+fn fnv1a(bytes: &[u8], seed: u64) -> u64 {
+    let mut hash = seed;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100_0000_01b3);
+    }
+    hash
+}
+
+const FNV_SEED: u64 = 0xcbf2_9ce4_8422_2325;
+
+impl PipelineCache {
+    fn clear(&mut self) {
+        self.root_signatures.clear();
+        self.compute_pipelines.clear();
+        self.render_pipelines.clear();
+    }
+}
+
 /// The D3D12 device, its direct queue and the fence used to synchronize with it.
 pub struct Device {
     raw: ID3D12Device,
@@ -474,6 +518,12 @@ pub struct Device {
     /// buffers alive and makes `ResizeBuffers` fail with
     /// `DXGI_ERROR_INVALID_CALL`.
     pending_allocators: RefCell<Vec<(u64, ID3D12CommandAllocator)>>,
+    /// Root signatures and pipeline states, keyed by a hash of their
+    /// descriptors, so identical requests share one D3D12 object.
+    cache: RefCell<PipelineCache>,
+    /// Monotonic id handed out for cache entries; tests compare it to prove
+    /// deduplication.
+    next_object_id: Cell<u64>,
     node_count: u32,
     debug_layer: bool,
 }
@@ -498,6 +548,8 @@ impl Device {
             fence_event,
             next_fence_value: Cell::new(0),
             pending_allocators: RefCell::new(Vec::new()),
+            cache: RefCell::new(PipelineCache::default()),
+            next_object_id: Cell::new(1),
             node_count,
             debug_layer,
         })
@@ -611,12 +663,64 @@ impl Device {
         Ok(())
     }
 
+    /// The `GetDeviceRemovedReason` code when the device is lost.
+    fn device_lost_reason(&self) -> Option<i32> {
+        match unsafe { self.raw.GetDeviceRemovedReason() } {
+            Ok(()) => None,
+            Err(err) => Some(err.code().0),
+        }
+    }
+
+    /// Whether the device has been removed.
+    pub fn is_lost(&self) -> bool {
+        self.device_lost_reason().is_some()
+    }
+
+    /// Maps a D3D12 failure to [`Error::DeviceLost`] when the device is gone.
+    fn map_device_error(&self, err: WinError) -> Error {
+        match self.device_lost_reason() {
+            Some(reason) => Error::DeviceLost(reason),
+            None => Error::Windows(err),
+        }
+    }
+
     /// Fails if the device was removed (driver reset, invalid resource use,
     /// etc.). Useful at phase boundaries so a lost device is reported where it
     /// happened rather than at the next submission.
     pub fn check_device(&self) -> Result<(), Error> {
-        unsafe { self.raw.GetDeviceRemovedReason()? };
+        match self.device_lost_reason() {
+            Some(reason) => Err(Error::DeviceLost(reason)),
+            None => Ok(()),
+        }
+    }
+
+    /// Removes the device through the debug layer, which is how tests exercise
+    /// the device-lost path. Only works when `BLADE_D3D12_DEBUG=1` enabled the
+    /// debug layer.
+    pub fn remove_device(&self) -> Result<(), Error> {
+        if !self.debug_layer {
+            return Err(Error::InvalidState(
+                "removing a device needs the debug layer (BLADE_D3D12_DEBUG=1)",
+            ));
+        }
+        let device5: ID3D12Device5 = self.raw.cast()?;
+        unsafe { device5.RemoveDevice() };
         Ok(())
+    }
+
+    /// Root-signature and pipeline cache counters.
+    pub fn pipeline_cache_stats(&self) -> PipelineCacheStats {
+        let cache = self.cache.borrow();
+        PipelineCacheStats {
+            hits: cache.hits,
+            misses: cache.misses,
+        }
+    }
+
+    /// Drops every cached root signature and pipeline state. Only safe once the
+    /// GPU is idle and nothing still references them from the CPU side.
+    pub fn clear_pipeline_cache(&self) {
+        self.cache.borrow_mut().clear();
     }
 
     /// Creates a committed buffer and returns it in its memory type's initial
@@ -652,14 +756,16 @@ impl Device {
         let state = desc.memory.initial_state();
         let mut resource: Option<ID3D12Resource> = None;
         unsafe {
-            self.raw.CreateCommittedResource(
+            if let Err(err) = self.raw.CreateCommittedResource(
                 &heap,
                 D3D12_HEAP_FLAG_NONE,
                 &resource_desc,
                 state.to_d3d12(),
                 None,
                 &mut resource,
-            )?;
+            ) {
+                return Err(self.map_device_error(err));
+            }
         }
         let resource = resource.ok_or(Error::InvalidState(
             "CreateCommittedResource returned no resource",
@@ -678,13 +784,19 @@ impl Device {
     /// A new allocator per encoder keeps the phase 1 model trivial; the
     /// allocator ring for transient frames arrives with the HAL wiring.
     pub fn record(&self) -> Result<CommandEncoder, Error> {
-        let allocator: ID3D12CommandAllocator = unsafe {
+        let allocator: ID3D12CommandAllocator = match unsafe {
             self.raw
-                .CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT)?
+                .CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT)
+        } {
+            Ok(allocator) => allocator,
+            Err(err) => return Err(self.map_device_error(err)),
         };
-        let list: ID3D12GraphicsCommandList = unsafe {
+        let list: ID3D12GraphicsCommandList = match unsafe {
             self.raw
-                .CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &allocator, None)?
+                .CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &allocator, None)
+        } {
+            Ok(list) => list,
+            Err(err) => return Err(self.map_device_error(err)),
         };
         Ok(CommandEncoder {
             allocator,
@@ -699,13 +811,17 @@ impl Device {
         if encoder.closed {
             return Err(Error::InvalidState("command list is already closed"));
         }
-        unsafe { encoder.list.Close()? };
+        if let Err(err) = unsafe { encoder.list.Close() } {
+            return Err(self.map_device_error(err));
+        }
         let command_list: ID3D12CommandList = encoder.list.cast()?;
         unsafe {
             self.queue.ExecuteCommandLists(&[Some(command_list)]);
             let value = self.next_fence_value.get() + 1;
             self.next_fence_value.set(value);
-            self.queue.Signal(&self.fence, value)?;
+            if let Err(err) = self.queue.Signal(&self.fence, value) {
+                return Err(self.map_device_error(err));
+            }
             // The allocator must outlive the submitted work; `wait` releases it
             // once the fence passes this value.
             self.pending_allocators
@@ -718,8 +834,9 @@ impl Device {
     /// Blocks the CPU until the GPU reaches `sp`.
     pub fn wait(&self, sp: SyncPoint) -> Result<(), Error> {
         unsafe {
-            self.fence
-                .SetEventOnCompletion(sp.value, self.fence_event)?;
+            if let Err(err) = self.fence.SetEventOnCompletion(sp.value, self.fence_event) {
+                return Err(self.map_device_error(err));
+            }
             let result = WaitForSingleObject(self.fence_event, INFINITE);
             if result != WAIT_OBJECT_0 {
                 return Err(Error::InvalidState(
@@ -738,7 +855,9 @@ impl Device {
         unsafe {
             let value = self.next_fence_value.get() + 1;
             self.next_fence_value.set(value);
-            self.queue.Signal(&self.fence, value)?;
+            if let Err(err) = self.queue.Signal(&self.fence, value) {
+                return Err(self.map_device_error(err));
+            }
             self.wait(SyncPoint { value })
         }
     }
@@ -1028,14 +1147,16 @@ impl Device {
         };
         let mut resource: Option<ID3D12Resource> = None;
         unsafe {
-            self.raw.CreateCommittedResource(
+            if let Err(err) = self.raw.CreateCommittedResource(
                 &heap,
                 D3D12_HEAP_FLAG_NONE,
                 &resource_desc,
                 D3D12_RESOURCE_STATE_COMMON,
                 None,
                 &mut resource,
-            )?;
+            ) {
+                return Err(self.map_device_error(err));
+            }
         }
         let resource = resource.ok_or(Error::InvalidState(
             "CreateCommittedResource returned no texture",
@@ -1584,11 +1705,17 @@ pub enum RootParameter {
 pub struct RenderPipeline {
     raw: ID3D12PipelineState,
     root_signature: RootSignature,
+    id: u64,
 }
 
 impl RenderPipeline {
     pub fn root_signature(&self) -> &RootSignature {
         &self.root_signature
+    }
+
+    /// Cache id: equal ids mean the same pipeline state is reused.
+    pub fn id(&self) -> u64 {
+        self.id
     }
 }
 
@@ -1619,17 +1746,31 @@ pub struct RenderPipelineDesc<'a> {
 /// A serialized `ID3D12RootSignature`.
 pub struct RootSignature {
     raw: ID3D12RootSignature,
+    id: u64,
+}
+
+impl RootSignature {
+    /// Cache id: equal ids mean the same root signature is reused.
+    pub fn id(&self) -> u64 {
+        self.id
+    }
 }
 
 /// A compute pipeline state and the root signature it was created with.
 pub struct ComputePipeline {
     raw: ID3D12PipelineState,
     root_signature: RootSignature,
+    id: u64,
 }
 
 impl ComputePipeline {
     pub fn root_signature(&self) -> &RootSignature {
         &self.root_signature
+    }
+
+    /// Cache id: equal ids mean the same pipeline state is reused.
+    pub fn id(&self) -> u64 {
+        self.id
     }
 }
 
@@ -1812,8 +1953,26 @@ impl Device {
         let data = unsafe { blob.GetBufferPointer() } as *const u8;
         let size = unsafe { blob.GetBufferSize() };
         let bytes = unsafe { std::slice::from_raw_parts(data, size) };
+        let key = fnv1a(bytes, FNV_SEED);
+
+        let mut cache = self.cache.borrow_mut();
+        let cached = cache.root_signatures.get(&key).cloned();
+        if let Some((id, raw)) = cached {
+            cache.hits += 1;
+            let signature = RootSignature {
+                raw: raw.clone(),
+                id,
+            };
+            drop(cache);
+            return Ok(signature);
+        }
+        cache.misses += 1;
         let raw: ID3D12RootSignature = unsafe { self.raw.CreateRootSignature(0, bytes)? };
-        Ok(RootSignature { raw })
+        let id = self.next_object_id.get();
+        self.next_object_id.set(id + 1);
+        cache.root_signatures.insert(key, (id, raw.clone()));
+        drop(cache);
+        Ok(RootSignature { raw, id })
     }
 
     /// Creates a render-target view for `texture` in an RTV heap.
@@ -2002,13 +2161,51 @@ impl Device {
             CachedPSO: D3D12_CACHED_PIPELINE_STATE::default(),
             Flags: D3D12_PIPELINE_STATE_FLAG_NONE,
         };
+        let mut key = fnv1a(desc.vertex_dxil, FNV_SEED);
+        key = fnv1a(desc.pixel_dxil, key);
+        for format in desc.color_formats {
+            key = fnv1a(&format.0.to_le_bytes(), key);
+        }
+        match desc.depth_format {
+            Some(format) => key = fnv1a(&format.0.to_le_bytes(), key),
+            None => key = fnv1a(&[0xFF], key),
+        }
+        for attribute in desc.vertex_attributes {
+            key = fnv1a(attribute.semantic.as_bytes(), key);
+            key = fnv1a(&attribute.format.0.to_le_bytes(), key);
+            key = fnv1a(&attribute.offset.to_le_bytes(), key);
+        }
+        key = fnv1a(&root_signature.id.to_le_bytes(), key);
+
+        let mut cache = self.cache.borrow_mut();
+        let cached = cache.render_pipelines.get(&key).cloned();
+        if let Some((id, raw)) = cached {
+            cache.hits += 1;
+            let pipeline = RenderPipeline {
+                raw: raw.clone(),
+                root_signature: RootSignature {
+                    raw: root_signature.raw.clone(),
+                    id: root_signature.id,
+                },
+                id,
+            };
+            drop(cache);
+            return Ok(pipeline);
+        }
+        cache.misses += 1;
         let raw: ID3D12PipelineState =
             unsafe { self.raw.CreateGraphicsPipelineState(&pipeline_desc)? };
+        let id = self.next_object_id.get();
+        self.next_object_id.set(id + 1);
+        cache.render_pipelines.insert(key, (id, raw.clone()));
+        drop(cache);
         Ok(RenderPipeline {
             raw,
             root_signature: RootSignature {
                 raw: root_signature.raw.clone(),
+                id: root_signature.id,
             },
+            id,
         })
     }
 
@@ -2031,12 +2228,35 @@ impl Device {
             CachedPSO: D3D12_CACHED_PIPELINE_STATE::default(),
             Flags: D3D12_PIPELINE_STATE_FLAG_NONE,
         };
+        let key = fnv1a(dxil, fnv1a(&root_signature.id.to_le_bytes(), FNV_SEED));
+        let mut cache = self.cache.borrow_mut();
+        let cached = cache.compute_pipelines.get(&key).cloned();
+        if let Some((id, raw)) = cached {
+            cache.hits += 1;
+            let pipeline = ComputePipeline {
+                raw: raw.clone(),
+                root_signature: RootSignature {
+                    raw: root_signature.raw.clone(),
+                    id: root_signature.id,
+                },
+                id,
+            };
+            drop(cache);
+            return Ok(pipeline);
+        }
+        cache.misses += 1;
         let raw: ID3D12PipelineState = unsafe { self.raw.CreateComputePipelineState(&desc)? };
+        let id = self.next_object_id.get();
+        self.next_object_id.set(id + 1);
+        cache.compute_pipelines.insert(key, (id, raw.clone()));
+        drop(cache);
         Ok(ComputePipeline {
             raw,
             root_signature: RootSignature {
                 raw: root_signature.raw.clone(),
+                id: root_signature.id,
             },
+            id,
         })
     }
 }
@@ -3674,6 +3894,152 @@ mod tests {
             .count();
         assert_eq!(wrong0, 0, "target 0 should be red (SV_Target0)");
         assert_eq!(wrong1, 0, "target 1 should be green (SV_Target1)");
+    }
+
+    #[test]
+    fn root_signatures_and_pipelines_are_cached() {
+        let init = init_headless();
+        let device = &init.device;
+        let compiler = match ShaderCompiler::load() {
+            Ok(compiler) => compiler,
+            Err(err) => {
+                eprintln!("skipping pipeline cache test: {err}");
+                return;
+            }
+        };
+        let vs = compiler
+            .compile_hlsl(shader::FULLSCREEN_HLSL, "vs_main", "vs_6_0")
+            .expect("vertex shader");
+        let ps = compiler
+            .compile_hlsl(shader::FULLSCREEN_HLSL, "ps_main", "ps_6_0")
+            .expect("pixel shader");
+
+        let parameters = [RootParameter::Constants {
+            shader_register: 0,
+            count: 4,
+        }];
+        let root_a = device
+            .create_graphics_root_signature(&parameters)
+            .expect("root signature a");
+        let root_b = device
+            .create_graphics_root_signature(&parameters)
+            .expect("root signature b");
+        assert_eq!(
+            root_a.id(),
+            root_b.id(),
+            "identical root signatures are shared"
+        );
+
+        let root_other = device
+            .create_graphics_root_signature(&[RootParameter::Constants {
+                shader_register: 0,
+                count: 8,
+            }])
+            .expect("different root signature");
+        assert_ne!(
+            root_a.id(),
+            root_other.id(),
+            "different root signatures differ"
+        );
+
+        let desc = RenderPipelineDesc {
+            vertex_dxil: &vs,
+            pixel_dxil: &ps,
+            color_formats: &[DXGI_FORMAT_R8G8B8A8_UNORM],
+            vertex_attributes: &[],
+            depth_format: None,
+        };
+        let pipeline_a = device
+            .create_render_pipeline(&desc, &root_a)
+            .expect("pipeline a");
+        let pipeline_b = device
+            .create_render_pipeline(&desc, &root_b)
+            .expect("pipeline b");
+        assert_eq!(
+            pipeline_a.id(),
+            pipeline_b.id(),
+            "identical pipelines are shared"
+        );
+
+        // A different color format is a different pipeline.
+        let desc_rgba32 = RenderPipelineDesc {
+            vertex_dxil: &vs,
+            pixel_dxil: &ps,
+            color_formats: &[DXGI_FORMAT_R32G32B32A32_FLOAT],
+            vertex_attributes: &[],
+            depth_format: None,
+        };
+        let pipeline_other = device
+            .create_render_pipeline(&desc_rgba32, &root_a)
+            .expect("pipeline with another format");
+        assert_ne!(pipeline_a.id(), pipeline_other.id());
+
+        let stats = device.pipeline_cache_stats();
+        assert_eq!(
+            stats,
+            PipelineCacheStats { hits: 2, misses: 4 },
+            "two root-signature/pipeline lookups should hit the cache"
+        );
+
+        device.clear_pipeline_cache();
+        let pipeline_after_clear = device
+            .create_render_pipeline(&desc, &root_a)
+            .expect("pipeline after clear");
+        assert_ne!(
+            pipeline_a.id(),
+            pipeline_after_clear.id(),
+            "clearing the cache creates a fresh object"
+        );
+    }
+
+    #[test]
+    fn device_lost_is_detected() {
+        let options = InitOptions {
+            enable_debug_layer: true,
+            ..InitOptions::headless()
+        };
+        let init = match init_with_options(&options) {
+            Ok(init) => init,
+            Err(err) => {
+                eprintln!("skipping device-lost test: {err}");
+                return;
+            }
+        };
+        let device = &init.device;
+        if !device.has_debug_layer() {
+            eprintln!("skipping device-lost test: debug layer unavailable");
+            return;
+        }
+        assert!(!device.is_lost(), "fresh device must be alive");
+        device.check_device().expect("fresh device is healthy");
+
+        // `RemoveDevice` is a debug-layer-only way to simulate a lost device.
+        device
+            .remove_device()
+            .expect("remove device through the debug layer");
+        assert!(device.is_lost(), "device should report itself lost");
+        match device.check_device() {
+            Err(Error::DeviceLost(_)) => {}
+            other => panic!("expected Error::DeviceLost, got {other:?}"),
+        }
+
+        // Submitting after the loss must surface the dedicated error, not a
+        // generic HRESULT.
+        match device.record() {
+            Ok(encoder) => match device.submit(encoder) {
+                Err(Error::DeviceLost(_)) => {}
+                Err(other) => panic!("expected DeviceLost on submit, got {other}"),
+                Ok(_) => panic!("submit on a lost device must fail"),
+            },
+            Err(Error::DeviceLost(_)) => {}
+            Err(other) => panic!("expected DeviceLost on record, got {other}"),
+        }
+
+        // Recovery is "create a new device"; the old one is already released
+        // with its resources.
+        let recovered = init_with_options(&InitOptions::headless()).expect("new device after loss");
+        assert!(!recovered.device.is_lost());
+        assert_eq!(recovered.device.node_count(), 1);
     }
 
     #[test]
