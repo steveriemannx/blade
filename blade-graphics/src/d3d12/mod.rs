@@ -35,12 +35,14 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_RESOURCE_BARRIER, D3D12_RESOURCE_BARRIER_0, D3D12_RESOURCE_BARRIER_FLAG_NONE,
     D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_DESC, D3D12_RESOURCE_DIMENSION_BUFFER,
     D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST,
-    D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_GENERIC_READ,
-    D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATES, D3D12_RESOURCE_TRANSITION_BARRIER,
-    D3D12_RLDO_DETAIL, D3D12_RLDO_IGNORE_INTERNAL, D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-    D3D12CreateDevice, D3D12GetDebugInterface, ID3D12CommandAllocator, ID3D12CommandList,
-    ID3D12CommandQueue, ID3D12Debug, ID3D12DebugDevice, ID3D12Device, ID3D12Fence,
-    ID3D12GraphicsCommandList, ID3D12InfoQueue, ID3D12Resource,
+    D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_DEPTH_READ,
+    D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_GENERIC_READ,
+    D3D12_RESOURCE_STATE_INDEX_BUFFER, D3D12_RESOURCE_STATE_PRESENT,
+    D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, D3D12_RESOURCE_STATES,
+    D3D12_RESOURCE_TRANSITION_BARRIER, D3D12_RLDO_DETAIL, D3D12_RLDO_IGNORE_INTERNAL,
+    D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12CreateDevice, D3D12GetDebugInterface,
+    ID3D12CommandAllocator, ID3D12CommandList, ID3D12CommandQueue, ID3D12Debug, ID3D12DebugDevice,
+    ID3D12Device, ID3D12Fence, ID3D12GraphicsCommandList, ID3D12InfoQueue, ID3D12Resource,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC,
@@ -54,50 +56,53 @@ use windows::Win32::Graphics::Dxgi::{
     DXGI_USAGE_RENDER_TARGET_OUTPUT, DXGIGetDebugInterface1, IDXGIAdapter1, IDXGIDevice,
     IDXGIFactory6, IDXGIInfoQueue, IDXGIOutput, IDXGISwapChain1, IDXGISwapChain2, IDXGISwapChain4,
 };
-use windows::core::{Error as WinError, HRESULT, Interface, PCWSTR};
+use windows::core::{Error as WinError, HRESULT, Interface, PCSTR, PCWSTR};
 
 // Phase 2: textures, descriptors and samplers.
 use windows::Win32::Graphics::Direct3D12::{
     D3D_ROOT_SIGNATURE_VERSION_1_0, D3D12_BLEND_DESC, D3D12_BLEND_ONE, D3D12_BLEND_OP_ADD,
     D3D12_BLEND_ZERO, D3D12_BUFFER_SRV, D3D12_BUFFER_SRV_FLAGS, D3D12_BUFFER_UAV,
-    D3D12_BUFFER_UAV_FLAGS, D3D12_CACHED_PIPELINE_STATE, D3D12_COLOR_WRITE_ENABLE_ALL,
-    D3D12_COMPARISON_FUNC_ALWAYS, D3D12_COMPARISON_FUNC_NEVER, D3D12_COMPUTE_PIPELINE_STATE_DESC,
+    D3D12_BUFFER_UAV_FLAGS, D3D12_CACHED_PIPELINE_STATE, D3D12_CLEAR_FLAG_DEPTH,
+    D3D12_COLOR_WRITE_ENABLE_ALL, D3D12_COMPARISON_FUNC_ALWAYS, D3D12_COMPARISON_FUNC_LESS,
+    D3D12_COMPARISON_FUNC_NEVER, D3D12_COMPUTE_PIPELINE_STATE_DESC,
     D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF, D3D12_CONSTANT_BUFFER_VIEW_DESC,
     D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_CULL_MODE_NONE, D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-    D3D12_DEPTH_STENCIL_DESC, D3D12_DEPTH_STENCILOP_DESC, D3D12_DEPTH_WRITE_MASK_ZERO,
-    D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
+    D3D12_DEPTH_STENCIL_DESC, D3D12_DEPTH_STENCILOP_DESC, D3D12_DEPTH_WRITE_MASK_ALL,
+    D3D12_DEPTH_WRITE_MASK_ZERO, D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
     D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE, D3D12_DESCRIPTOR_HEAP_TYPE,
-    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
-    D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, D3D12_DESCRIPTOR_RANGE,
+    D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
+    D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, D3D12_DESCRIPTOR_RANGE,
     D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND, D3D12_DESCRIPTOR_RANGE_TYPE,
     D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER,
     D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_TYPE_UAV, D3D12_FILL_MODE_SOLID,
     D3D12_FILTER, D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_GPU_DESCRIPTOR_HANDLE,
     D3D12_GRAPHICS_PIPELINE_STATE_DESC, D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED,
+    D3D12_INDEX_BUFFER_VIEW, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, D3D12_INPUT_ELEMENT_DESC,
     D3D12_INPUT_LAYOUT_DESC, D3D12_LOGIC_OP_NOOP, D3D12_PIPELINE_STATE_FLAG_NONE,
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
     D3D12_RASTERIZER_DESC, D3D12_RENDER_TARGET_BLEND_DESC, D3D12_RESOURCE_BARRIER_TYPE_UAV,
-    D3D12_RESOURCE_DIMENSION_TEXTURE2D, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
-    D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE,
-    D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-    D3D12_RESOURCE_UAV_BARRIER, D3D12_ROOT_CONSTANTS, D3D12_ROOT_DESCRIPTOR_TABLE,
-    D3D12_ROOT_PARAMETER, D3D12_ROOT_PARAMETER_0, D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
-    D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE, D3D12_ROOT_SIGNATURE_DESC,
-    D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, D3D12_ROOT_SIGNATURE_FLAG_NONE,
-    D3D12_ROOT_SIGNATURE_FLAGS, D3D12_SAMPLER_DESC, D3D12_SHADER_BYTECODE,
-    D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_SHADER_RESOURCE_VIEW_DESC_0,
+    D3D12_RESOURCE_DIMENSION_TEXTURE2D, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
+    D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+    D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET,
+    D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_UAV_BARRIER, D3D12_ROOT_CONSTANTS,
+    D3D12_ROOT_DESCRIPTOR_TABLE, D3D12_ROOT_PARAMETER, D3D12_ROOT_PARAMETER_0,
+    D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS, D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
+    D3D12_ROOT_SIGNATURE_DESC, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
+    D3D12_ROOT_SIGNATURE_FLAG_NONE, D3D12_ROOT_SIGNATURE_FLAGS, D3D12_SAMPLER_DESC,
+    D3D12_SHADER_BYTECODE, D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_SHADER_RESOURCE_VIEW_DESC_0,
     D3D12_SHADER_VISIBILITY_ALL, D3D12_SRV_DIMENSION_BUFFER, D3D12_SRV_DIMENSION_TEXTURE2D,
     D3D12_STREAM_OUTPUT_DESC, D3D12_TEX2D_SRV, D3D12_TEXTURE_ADDRESS_MODE,
     D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_COPY_LOCATION, D3D12_TEXTURE_COPY_LOCATION_0,
     D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
     D3D12_TEXTURE_LAYOUT_UNKNOWN, D3D12_UAV_DIMENSION_BUFFER, D3D12_UNORDERED_ACCESS_VIEW_DESC,
-    D3D12_UNORDERED_ACCESS_VIEW_DESC_0, D3D12_VIEWPORT, D3D12SerializeRootSignature,
-    ID3D12DescriptorHeap, ID3D12PipelineState, ID3D12RootSignature,
+    D3D12_UNORDERED_ACCESS_VIEW_DESC_0, D3D12_VERTEX_BUFFER_VIEW, D3D12_VIEWPORT,
+    D3D12SerializeRootSignature, ID3D12DescriptorHeap, ID3D12PipelineState, ID3D12RootSignature,
 };
 pub use windows::Win32::Graphics::Dxgi::Common::{
-    DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM,
-    DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R32_FLOAT,
-    DXGI_FORMAT_R32_UINT, DXGI_FORMAT_R32G32B32A32_FLOAT,
+    DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R8_UNORM,
+    DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_FORMAT_R16_UINT,
+    DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R32_UINT,
+    DXGI_FORMAT_R32G32B32_FLOAT, DXGI_FORMAT_R32G32B32A32_FLOAT,
 };
 use windows::Win32::System::Threading::{CreateEventW, INFINITE, WaitForSingleObject};
 
@@ -263,6 +268,14 @@ pub enum ResourceState {
     RenderTarget,
     /// Back-buffer state expected by DXGI when presenting.
     Present,
+    /// Read as a vertex buffer (or constant buffer) by the input assembler.
+    VertexBuffer,
+    /// Read as an index buffer by the input assembler.
+    IndexBuffer,
+    /// Bound as a depth-stencil target for depth testing and writes.
+    DepthWrite,
+    /// Sampled or read as depth, without depth writes.
+    DepthRead,
 }
 
 impl ResourceState {
@@ -276,6 +289,10 @@ impl ResourceState {
             Self::UnorderedAccess => D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
             Self::RenderTarget => D3D12_RESOURCE_STATE_RENDER_TARGET,
             Self::Present => D3D12_RESOURCE_STATE_PRESENT,
+            Self::VertexBuffer => D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
+            Self::IndexBuffer => D3D12_RESOURCE_STATE_INDEX_BUFFER,
+            Self::DepthWrite => D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            Self::DepthRead => D3D12_RESOURCE_STATE_DEPTH_READ,
         }
     }
 }
@@ -882,6 +899,10 @@ pub struct TextureDesc {
     /// `D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET`; creating an RTV for a texture
     /// without it removes the device.
     pub render_target: bool,
+    /// Allow depth-stencil views. D3D12 requires
+    /// `D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL`; creating a DSV for a texture
+    /// without it removes the device.
+    pub depth_stencil: bool,
 }
 
 impl TextureDesc {
@@ -892,6 +913,7 @@ impl TextureDesc {
             mip_levels: 1,
             format,
             render_target: false,
+            depth_stencil: false,
         }
     }
 
@@ -902,6 +924,11 @@ impl TextureDesc {
 
     pub fn with_render_target(mut self) -> Self {
         self.render_target = true;
+        self
+    }
+
+    pub fn with_depth_stencil(mut self) -> Self {
+        self.depth_stencil = true;
         self
     }
 }
@@ -992,6 +1019,8 @@ impl Device {
             Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
             Flags: if desc.render_target {
                 D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET
+            } else if desc.depth_stencil {
+                D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL
             } else {
                 D3D12_RESOURCE_FLAG_NONE
             },
@@ -1113,6 +1142,8 @@ pub enum DescriptorHeapType {
     Sampler,
     /// Render-target views; CPU-only, never shader visible.
     Rtv,
+    /// Depth-stencil views; CPU-only, never shader visible.
+    Dsv,
 }
 
 impl DescriptorHeapType {
@@ -1121,6 +1152,7 @@ impl DescriptorHeapType {
             Self::CbvSrvUav => D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
             Self::Sampler => D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
             Self::Rtv => D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
+            Self::Dsv => D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
         }
     }
 
@@ -1533,10 +1565,26 @@ impl RenderPipeline {
 }
 
 /// Description of a minimal render pipeline.
+/// One per-vertex input attribute, bound to input slot 0.
+#[derive(Clone, Copy, Debug)]
+pub struct VertexAttribute {
+    /// HLSL semantic name, e.g. `"POSITION"`.
+    pub semantic: &'static str,
+    pub format: DXGI_FORMAT,
+    /// Byte offset inside the vertex struct.
+    pub offset: u32,
+}
+
+/// Description of a render pipeline.
 pub struct RenderPipelineDesc<'a> {
     pub vertex_dxil: &'a [u8],
     pub pixel_dxil: &'a [u8],
     pub color_format: DXGI_FORMAT,
+    /// Per-vertex attributes; empty for a `SV_VertexID`-only shader.
+    pub vertex_attributes: &'a [VertexAttribute],
+    /// Depth-stencil format when the pass has a depth target. Enables depth
+    /// testing (`LESS`) and writes.
+    pub depth_format: Option<DXGI_FORMAT>,
 }
 
 /// A serialized `ID3D12RootSignature`.
@@ -1730,8 +1778,28 @@ impl Device {
         Ok(range)
     }
 
-    /// Builds a minimal render pipeline: vertex + pixel DXIL against one color
-    /// target, no input layout (the shader uses `SV_VertexID`), no depth.
+    /// Creates a depth-stencil view for `texture` in a DSV heap.
+    pub fn create_depth_stencil_view(
+        &self,
+        heap: &DescriptorHeap,
+        texture: &Texture,
+    ) -> Result<DescriptorRange, Error> {
+        self.ensure_heap_type(heap, DescriptorHeapType::Dsv)?;
+        if !texture.desc().depth_stencil {
+            return Err(Error::InvalidState(
+                "texture needs TextureDesc::with_depth_stencil() for depth-stencil views",
+            ));
+        }
+        let range = heap.allocate_one()?;
+        unsafe {
+            self.raw
+                .CreateDepthStencilView(&texture.resource, None, heap.cpu_handle(range.start));
+        }
+        Ok(range)
+    }
+
+    /// Builds a render pipeline: vertex + pixel DXIL against one color target,
+    /// optional per-vertex input layout and optional depth-stencil target.
     pub fn create_render_pipeline(
         &self,
         desc: &RenderPipelineDesc<'_>,
@@ -1775,16 +1843,53 @@ impl Device {
             ForcedSampleCount: 0,
             ConservativeRaster: D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF,
         };
+        let depth_enabled = desc.depth_format.is_some();
         let depth_stencil = D3D12_DEPTH_STENCIL_DESC {
-            DepthEnable: false.into(),
-            DepthWriteMask: D3D12_DEPTH_WRITE_MASK_ZERO,
-            DepthFunc: D3D12_COMPARISON_FUNC_ALWAYS,
+            DepthEnable: depth_enabled.into(),
+            DepthWriteMask: if depth_enabled {
+                D3D12_DEPTH_WRITE_MASK_ALL
+            } else {
+                D3D12_DEPTH_WRITE_MASK_ZERO
+            },
+            DepthFunc: if depth_enabled {
+                D3D12_COMPARISON_FUNC_LESS
+            } else {
+                D3D12_COMPARISON_FUNC_ALWAYS
+            },
             StencilEnable: false.into(),
             StencilReadMask: 0,
             StencilWriteMask: 0,
             FrontFace: D3D12_DEPTH_STENCILOP_DESC::default(),
             BackFace: D3D12_DEPTH_STENCILOP_DESC::default(),
         };
+
+        // D3D12 reads the semantic names only while creating the PSO, but the
+        // `D3D12_INPUT_ELEMENT_DESC` array must stay alive for the call.
+        let semantic_names: Vec<Vec<u8>> = desc
+            .vertex_attributes
+            .iter()
+            .map(|attribute| {
+                attribute
+                    .semantic
+                    .bytes()
+                    .chain(std::iter::once(0))
+                    .collect()
+            })
+            .collect();
+        let input_elements: Vec<D3D12_INPUT_ELEMENT_DESC> = desc
+            .vertex_attributes
+            .iter()
+            .zip(&semantic_names)
+            .map(|(attribute, name)| D3D12_INPUT_ELEMENT_DESC {
+                SemanticName: PCSTR(name.as_ptr()),
+                SemanticIndex: 0,
+                Format: attribute.format,
+                InputSlot: 0,
+                AlignedByteOffset: attribute.offset,
+                InputSlotClass: D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
+                InstanceDataStepRate: 0,
+            })
+            .collect();
 
         let mut rtv_formats = [DXGI_FORMAT_UNKNOWN; 8];
         rtv_formats[0] = desc.color_format;
@@ -1816,14 +1921,14 @@ impl Device {
             RasterizerState: rasterizer,
             DepthStencilState: depth_stencil,
             InputLayout: D3D12_INPUT_LAYOUT_DESC {
-                pInputElementDescs: ptr::null(),
-                NumElements: 0,
+                pInputElementDescs: input_elements.as_ptr(),
+                NumElements: input_elements.len() as u32,
             },
             IBStripCutValue: D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED,
             PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
             NumRenderTargets: 1,
             RTVFormats: rtv_formats,
-            DSVFormat: DXGI_FORMAT_UNKNOWN,
+            DSVFormat: desc.depth_format.unwrap_or(DXGI_FORMAT_UNKNOWN),
             SampleDesc: DXGI_SAMPLE_DESC {
                 Count: 1,
                 Quality: 0,
@@ -1931,6 +2036,73 @@ impl CommandEncoder {
         let handle = heap.cpu_handle(rtv.start);
         unsafe {
             self.list.OMSetRenderTargets(1, Some(&handle), false, None);
+        }
+    }
+
+    /// Binds a render target plus a depth-stencil target.
+    pub fn set_render_targets_with_depth(
+        &mut self,
+        color_heap: &DescriptorHeap,
+        color: DescriptorRange,
+        depth_heap: &DescriptorHeap,
+        depth: DescriptorRange,
+    ) {
+        let color_handle = color_heap.cpu_handle(color.start);
+        let depth_handle = depth_heap.cpu_handle(depth.start);
+        unsafe {
+            self.list
+                .OMSetRenderTargets(1, Some(&color_handle), false, Some(&depth_handle));
+        }
+    }
+
+    /// Clears a depth-stencil target to `depth` (stencil is left untouched).
+    pub fn clear_depth_stencil(
+        &mut self,
+        heap: &DescriptorHeap,
+        depth: DescriptorRange,
+        depth_value: f32,
+    ) {
+        unsafe {
+            self.list.ClearDepthStencilView(
+                heap.cpu_handle(depth.start),
+                D3D12_CLEAR_FLAG_DEPTH,
+                depth_value,
+                0,
+                None,
+            );
+        }
+    }
+
+    /// Binds a vertex buffer to input slot 0.
+    pub fn set_vertex_buffer(&mut self, buffer: &Buffer, stride: u32) {
+        let view = D3D12_VERTEX_BUFFER_VIEW {
+            BufferLocation: buffer.gpu_address(),
+            SizeInBytes: buffer.size() as u32,
+            StrideInBytes: stride,
+        };
+        unsafe {
+            self.list.IASetVertexBuffers(0, Some(&[view]));
+        }
+    }
+
+    /// Binds an index buffer. `format` is usually
+    /// [`DXGI_FORMAT_R16_UINT`](crate::d3d12::DXGI_FORMAT_R16_UINT) or
+    /// `DXGI_FORMAT_R32_UINT`.
+    pub fn set_index_buffer(&mut self, buffer: &Buffer, format: DXGI_FORMAT) {
+        let view = D3D12_INDEX_BUFFER_VIEW {
+            BufferLocation: buffer.gpu_address(),
+            SizeInBytes: buffer.size() as u32,
+            Format: format,
+        };
+        unsafe {
+            self.list.IASetIndexBuffer(Some(&view));
+        }
+    }
+
+    /// Draws `index_count` indices, one instance.
+    pub fn draw_indexed(&mut self, index_count: u32) {
+        unsafe {
+            self.list.DrawIndexedInstanced(index_count, 1, 0, 0, 0);
         }
     }
 
@@ -2276,6 +2448,7 @@ impl Swapchain {
                     mip_levels: 1,
                     format: self.format,
                     render_target: true,
+                    depth_stencil: false,
                 },
                 state: Cell::new(ResourceState::Present),
             };
@@ -2810,6 +2983,8 @@ mod tests {
                     vertex_dxil: &vs,
                     pixel_dxil: &ps,
                     color_format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                    vertex_attributes: &[],
+                    depth_format: None,
                 },
                 &root,
             )
@@ -2931,6 +3106,285 @@ mod tests {
         device
             .check_device()
             .expect("device alive after resize/present");
+    }
+
+    /// Renders with a vertex-buffer pipeline and returns the tightly packed
+    /// pixels of a `width` x `height` RGBA8 target.
+    fn render_mesh(
+        device: &Device,
+        pipeline: &RenderPipeline,
+        depth: Option<(&Texture, DescriptorRange, &DescriptorHeap)>,
+        rtv_heap: &DescriptorHeap,
+        rtv: DescriptorRange,
+        texture: &Texture,
+        vertex_buffers: &[(&Buffer, u32)],
+        clear: [f32; 4],
+    ) -> Vec<u8> {
+        let (width, height) = (texture.width(), texture.height());
+        let mut encoder = device.record().expect("encoder");
+        encoder.transition_texture(texture, ResourceState::RenderTarget);
+        if let Some((depth_texture, depth_range, depth_heap)) = depth {
+            encoder.transition_texture(depth_texture, ResourceState::DepthWrite);
+            encoder.set_render_targets_with_depth(rtv_heap, rtv, depth_heap, depth_range);
+            encoder.clear_depth_stencil(depth_heap, depth_range, 1.0);
+        } else {
+            encoder.set_render_targets(rtv_heap, rtv);
+        }
+        encoder.clear_render_target(rtv_heap, rtv, clear);
+        encoder.set_render_pipeline(pipeline);
+        encoder.set_viewport(width as f32, height as f32);
+        encoder.set_scissor(width as i32, height as i32);
+        for (buffer, stride) in vertex_buffers {
+            encoder.set_vertex_buffer(buffer, *stride);
+            encoder.draw_instanced(3, 1);
+        }
+        encoder.transition_texture(texture, ResourceState::CopySource);
+        let sp = device.submit(encoder).expect("submit");
+        device.wait(sp).expect("wait");
+        device.read_texture(texture).expect("readback")
+    }
+
+    #[test]
+    fn vertex_buffer_input_layout_draws_triangle() {
+        let init = init_headless();
+        let device = &init.device;
+        let compiler = match ShaderCompiler::load() {
+            Ok(compiler) => compiler,
+            Err(err) => {
+                eprintln!("skipping mesh test: {err}");
+                return;
+            }
+        };
+        let vs = compiler
+            .compile_hlsl(shader::MESH_HLSL, "vs_main", "vs_6_0")
+            .expect("vertex shader");
+        let ps = compiler
+            .compile_hlsl(shader::MESH_HLSL, "ps_main", "ps_6_0")
+            .expect("pixel shader");
+        let root = device
+            .create_graphics_root_signature(&[])
+            .expect("root signature");
+        let pipeline = device
+            .create_render_pipeline(
+                &RenderPipelineDesc {
+                    vertex_dxil: &vs,
+                    pixel_dxil: &ps,
+                    color_format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                    vertex_attributes: &[
+                        VertexAttribute {
+                            semantic: "POSITION",
+                            format: DXGI_FORMAT_R32G32B32_FLOAT,
+                            offset: 0,
+                        },
+                        VertexAttribute {
+                            semantic: "COLOR",
+                            format: DXGI_FORMAT_R32G32B32_FLOAT,
+                            offset: 12,
+                        },
+                    ],
+                    depth_format: None,
+                },
+                &root,
+            )
+            .expect("mesh pipeline");
+
+        // Clip-space triangle: red bottom-left, green bottom-right, blue top.
+        let vertices: [f32; 18] = [
+            -0.5, -0.5, 0.0, 1.0, 0.0, 0.0, //
+            0.5, -0.5, 0.0, 0.0, 1.0, 0.0, //
+            0.0, 0.5, 0.0, 0.0, 0.0, 1.0,
+        ];
+        let vertex_bytes: Vec<u8> = vertices.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let vertex_buffer = device
+            .create_buffer(BufferDesc::new(vertex_bytes.len() as u64, Memory::Upload))
+            .expect("vertex buffer");
+        vertex_buffer
+            .write(0, &vertex_bytes)
+            .expect("write vertices");
+
+        let (width, height) = (64u32, 64u32);
+        let texture = device
+            .create_texture(
+                TextureDesc::new(width, height, DXGI_FORMAT_R8G8B8A8_UNORM).with_render_target(),
+            )
+            .expect("color target");
+        let rtv_heap = DescriptorHeap::new(device, DescriptorHeapType::Rtv, 4).expect("rtv heap");
+        let rtv = device
+            .create_render_target_view(&rtv_heap, &texture)
+            .expect("rtv");
+
+        let pixels = render_mesh(
+            device,
+            &pipeline,
+            None,
+            &rtv_heap,
+            rtv,
+            &texture,
+            &[(&vertex_buffer, 24)],
+            [0.0, 0.0, 0.0, 1.0],
+        );
+
+        // At the triangle centroid the three vertex colors average to a grey:
+        // the triangle is (-0.5,-0.5), (0.5,-0.5), (0,0.5) in NDC, so its
+        // centroid lands at (width/2, 7 * height / 12) in pixels.
+        let centroid = ((7 * height / 12) * width + width / 2) as usize * 4;
+        for (channel, value) in pixels[centroid..centroid + 3].iter().enumerate() {
+            assert!(
+                (i32::from(*value) - 85).abs() <= 8,
+                "centroid channel {channel} = {value}, expected ~85"
+            );
+        }
+        // A corner is outside the triangle: the clear color survives.
+        assert_eq!(
+            &pixels[..4],
+            &[0, 0, 0, 255],
+            "top-left pixel should be clear"
+        );
+        device.check_device().expect("device alive after mesh draw");
+    }
+
+    #[test]
+    fn depth_test_keeps_near_triangle() {
+        let init = init_headless();
+        let device = &init.device;
+        let compiler = match ShaderCompiler::load() {
+            Ok(compiler) => compiler,
+            Err(err) => {
+                eprintln!("skipping depth test: {err}");
+                return;
+            }
+        };
+        let vs = compiler
+            .compile_hlsl(shader::MESH_HLSL, "vs_main", "vs_6_0")
+            .expect("vertex shader");
+        let ps = compiler
+            .compile_hlsl(shader::MESH_HLSL, "ps_main", "ps_6_0")
+            .expect("pixel shader");
+        let root = device
+            .create_graphics_root_signature(&[])
+            .expect("root signature");
+        let attributes = [
+            VertexAttribute {
+                semantic: "POSITION",
+                format: DXGI_FORMAT_R32G32B32_FLOAT,
+                offset: 0,
+            },
+            VertexAttribute {
+                semantic: "COLOR",
+                format: DXGI_FORMAT_R32G32B32_FLOAT,
+                offset: 12,
+            },
+        ];
+        let with_depth = device
+            .create_render_pipeline(
+                &RenderPipelineDesc {
+                    vertex_dxil: &vs,
+                    pixel_dxil: &ps,
+                    color_format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                    vertex_attributes: &attributes,
+                    depth_format: Some(DXGI_FORMAT_D32_FLOAT),
+                },
+                &root,
+            )
+            .expect("depth pipeline");
+        let without_depth = device
+            .create_render_pipeline(
+                &RenderPipelineDesc {
+                    vertex_dxil: &vs,
+                    pixel_dxil: &ps,
+                    color_format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                    vertex_attributes: &attributes,
+                    depth_format: None,
+                },
+                &root,
+            )
+            .expect("no-depth pipeline");
+
+        // Two fullscreen triangles; the near one is red at z=0.25, the far one
+        // green at z=0.75. Both use a vertex buffer each.
+        let triangle = |z: f32, color: [f32; 3]| -> Vec<u8> {
+            let positions = [(-1.0f32, 1.0f32), (3.0, 1.0), (-1.0, -3.0)];
+            positions
+                .iter()
+                .flat_map(|(x, y)| [*x, *y, z, color[0], color[1], color[2]])
+                .flat_map(|value| value.to_le_bytes())
+                .collect()
+        };
+        let make_vertex_buffer = |data: Vec<u8>| {
+            let buffer = device
+                .create_buffer(BufferDesc::new(data.len() as u64, Memory::Upload))
+                .expect("vertex buffer");
+            buffer.write(0, &data).expect("write vertices");
+            buffer
+        };
+        let near_vertices = make_vertex_buffer(triangle(0.25, [1.0, 0.0, 0.0]));
+        let far_vertices = make_vertex_buffer(triangle(0.75, [0.0, 1.0, 0.0]));
+
+        let (width, height) = (32u32, 32u32);
+        let color_target = || {
+            device
+                .create_texture(
+                    TextureDesc::new(width, height, DXGI_FORMAT_R8G8B8A8_UNORM)
+                        .with_render_target(),
+                )
+                .expect("color target")
+        };
+        let rtv_heap = DescriptorHeap::new(device, DescriptorHeapType::Rtv, 8).expect("rtv heap");
+
+        // With depth testing, drawing the near triangle first keeps it red even
+        // after the far triangle is drawn.
+        let texture = color_target();
+        let rtv = device
+            .create_render_target_view(&rtv_heap, &texture)
+            .expect("rtv");
+        let depth_texture = device
+            .create_texture(
+                TextureDesc::new(width, height, DXGI_FORMAT_D32_FLOAT).with_depth_stencil(),
+            )
+            .expect("depth target");
+        let dsv_heap = DescriptorHeap::new(device, DescriptorHeapType::Dsv, 4).expect("dsv heap");
+        let dsv = device
+            .create_depth_stencil_view(&dsv_heap, &depth_texture)
+            .expect("dsv");
+        let pixels = render_mesh(
+            device,
+            &with_depth,
+            Some((&depth_texture, dsv, &dsv_heap)),
+            &rtv_heap,
+            rtv,
+            &texture,
+            &[(&near_vertices, 24), (&far_vertices, 24)],
+            [0.0, 0.0, 0.0, 1.0],
+        );
+        assert_eq!(
+            &pixels[..4],
+            &[255, 0, 0, 255],
+            "near triangle wins with depth test"
+        );
+
+        // Without depth testing the far triangle is drawn last and overwrites.
+        let texture = color_target();
+        let rtv = device
+            .create_render_target_view(&rtv_heap, &texture)
+            .expect("rtv");
+        let pixels = render_mesh(
+            device,
+            &without_depth,
+            None,
+            &rtv_heap,
+            rtv,
+            &texture,
+            &[(&near_vertices, 24), (&far_vertices, 24)],
+            [0.0, 0.0, 0.0, 1.0],
+        );
+        assert_eq!(
+            &pixels[..4],
+            &[0, 255, 0, 255],
+            "far triangle overwrites without depth test"
+        );
+        device
+            .check_device()
+            .expect("device alive after depth test");
     }
 
     #[test]

@@ -44,6 +44,8 @@ fn render_triangle(
             vertex_dxil: &vs,
             pixel_dxil: &ps,
             color_format: DXGI_FORMAT_R8G8B8A8_UNORM,
+            vertex_attributes: &[],
+            depth_format: None,
         },
         &root,
     )?;
