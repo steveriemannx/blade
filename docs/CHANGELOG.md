@@ -4,6 +4,7 @@ Changelog for *Blade* project
 
 - graphics: add a Windows-only `d3d12` feature with a Direct3D 12 device-initialization probe and a backend design document (`blade-graphics/etc/d3d12.md`)
 - graphics: grow the Windows-only `d3d12` backend into a device layer — adapter enumeration, debug layer, WARP fallback for headless tests, a direct queue with fence synchronization, committed buffers, resource transitions and buffer copies, covered by Windows unit tests and `d3d12-probe` / `d3d12-smoke` examples
+- graphics: the Windows-only `d3d12` device layer gains 2D textures with footprint-based upload/readback, shader-visible descriptor heaps with CBV/SRV/UAV and sampler views, buffer UAV flags, and a device-removed check; the Windows smoke example now covers textures and descriptors too
 - render: retain SVGF history on frozen frames; vehicle diagnostic captures require `BLADE_CAPTURE_VEHICLE=1` even when running ignored tests
 - graphics: ray queries require macOS 13+ / iOS 16+ on Metal; compute limits report direct sampled-texture slots, and renderer resource tables account for Vulkan image descriptors
 - render: `GBufferViews::motion` is now `Rgba16Float`, with screen-space motion in XY and previous-hit distance in Z

@@ -1,6 +1,6 @@
-//! Smoke test for the phase 1 D3D12 device layer: create a buffer in each
-//! memory type, copy a payload through GPU-local memory with command lists and
-//! a fence, and verify the bytes round-trip.
+//! Smoke test for the D3D12 device layer (phases 1-2): copy a payload through
+//! GPU-local buffer memory, upload a texture and read it back, and create
+//! buffer/texture/sampler descriptors — all with command lists and fences.
 //!
 //! Runs on the hardware adapter first, then on WARP so it works over SSH on a
 //! headless machine. Windows-only, requires the `d3d12` feature.
@@ -9,10 +9,13 @@
 //! `cargo run -p blade-graphics --features d3d12 --example d3d12-smoke`
 
 #[cfg(windows)]
-fn copy_roundtrip(
+fn device_smoke(
     options: &blade_graphics::d3d12::InitOptions,
-) -> Result<usize, blade_graphics::d3d12::Error> {
-    use blade_graphics::d3d12::{BufferDesc, Memory, ResourceState};
+) -> Result<(), blade_graphics::d3d12::Error> {
+    use blade_graphics::d3d12::{
+        BufferDesc, DescriptorHeap, DescriptorHeapType, Error, Memory, ResourceState, SamplerDesc,
+        TextureDesc, DXGI_FORMAT_R32_FLOAT, DXGI_FORMAT_R8G8B8A8_UNORM,
+    };
 
     let init = blade_graphics::d3d12::init_with_options(options)?;
     let device = &init.device;
@@ -23,12 +26,12 @@ fn copy_roundtrip(
         device.node_count()
     );
 
+    // 1. Buffer round-trip through device-local memory.
     let payload: Vec<u8> = (0..64 * 1024).map(|i| ((i * 7 + 3) % 251) as u8).collect();
     let size = payload.len() as u64;
-
     let upload = device.create_buffer(BufferDesc::new(size, Memory::Upload))?;
     upload.write(0, &payload)?;
-    let gpu = device.create_buffer(BufferDesc::new(size, Memory::Device))?;
+    let gpu = device.create_buffer(BufferDesc::new(size, Memory::Device).with_unordered_access())?;
     let readback = device.create_buffer(BufferDesc::new(size, Memory::Readback))?;
     println!(
         "buffers: upload {} B, device {} B, readback {} B (alignment {})",
@@ -39,29 +42,62 @@ fn copy_roundtrip(
     );
 
     let mut encoder = device.record()?;
-    encoder.transition(&gpu, ResourceState::CopyDest);
+    encoder.transition_buffer(&gpu, ResourceState::CopyDest);
     encoder.copy_buffer(&gpu, 0, &upload, 0, size);
-    encoder.transition(&gpu, ResourceState::CopySource);
+    encoder.transition_buffer(&gpu, ResourceState::CopySource);
     encoder.copy_buffer(&readback, 0, &gpu, 0, size);
-    encoder.transition(&gpu, ResourceState::Common);
+    encoder.transition_buffer(&gpu, ResourceState::Common);
     let sp = device.submit(encoder)?;
     device.wait(sp)?;
 
     let result = readback.read()?;
-    let mismatched = result[..payload.len()]
-        .iter()
-        .zip(&payload)
-        .filter(|(a, b)| a != b)
-        .count();
-    if mismatched != 0 {
-        eprintln!("round-trip mismatch: {mismatched} bytes differ");
-        return Err(blade_graphics::d3d12::Error::InvalidState(
-            "copy round-trip produced wrong data",
-        ));
+    if result[..payload.len()] != payload[..] {
+        eprintln!("buffer round-trip mismatch");
+        return Err(Error::InvalidState("buffer round-trip produced wrong data"));
     }
+    println!("buffer round-trip of {size} bytes: OK");
+
+    // 2. Texture upload + readback.
+    let (width, height) = (128u32, 64u32);
+    let texture = device.create_texture(TextureDesc::new(
+        width,
+        height,
+        DXGI_FORMAT_R8G8B8A8_UNORM,
+    ))?;
+    let texels: Vec<u8> = (0..width * height)
+        .flat_map(|i| [(i % 251) as u8, 0x10, 0x20, 0xFF])
+        .collect();
+    device.upload_texture(&texture, &texels)?;
+    let texels_back = device.read_texture(&texture)?;
+    if texels_back != texels {
+        eprintln!("texture round-trip mismatch");
+        return Err(Error::InvalidState("texture round-trip produced wrong data"));
+    }
+    println!(
+        "texture {width}x{height} upload + readback ({} KiB): OK",
+        texels.len() / 1024
+    );
+
+    // 3. Descriptor heaps, views and a sampler.
+    let view_heap = DescriptorHeap::new(device, DescriptorHeapType::CbvSrvUav, 256)?;
+    let sampler_heap = DescriptorHeap::new(device, DescriptorHeapType::Sampler, 16)?;
+    let _buffer_srv = device.create_buffer_srv_typed(&view_heap, &gpu, DXGI_FORMAT_R32_FLOAT)?;
+    let _buffer_uav = device.create_buffer_uav_typed(&view_heap, &gpu, DXGI_FORMAT_R32_FLOAT)?;
+    let _buffer_cbv = device.create_buffer_cbv(&view_heap, &gpu, 0, 256)?;
+    let texture_srv = device.create_texture_srv(&view_heap, &texture)?;
+    let sampler = device.create_sampler(&sampler_heap, &SamplerDesc::default())?;
+    println!(
+        "descriptors: view heap {}/{}, sampler heap {}/{} (texture srv at {}, sampler at {})",
+        view_heap.allocated(),
+        view_heap.capacity(),
+        sampler_heap.allocated(),
+        sampler_heap.capacity(),
+        texture_srv.start,
+        sampler.start,
+    );
+
     device.wait_idle()?;
-    println!("round-trip of {size} bytes: OK");
-    Ok(payload.len())
+    Ok(())
 }
 
 fn main() {
@@ -72,21 +108,15 @@ fn main() {
         let mut failed = false;
 
         println!("== hardware ==");
-        match copy_roundtrip(&d3d12::InitOptions::default()) {
-            Ok(_) => {}
-            Err(err) => {
-                eprintln!("hardware smoke test failed: {err}");
-                failed = true;
-            }
+        if let Err(err) = device_smoke(&d3d12::InitOptions::default()) {
+            eprintln!("hardware smoke test failed: {err}");
+            failed = true;
         }
 
         println!("\n== WARP ==");
-        match copy_roundtrip(&d3d12::InitOptions::headless()) {
-            Ok(_) => {}
-            Err(err) => {
-                eprintln!("WARP smoke test failed: {err}");
-                failed = true;
-            }
+        if let Err(err) = device_smoke(&d3d12::InitOptions::headless()) {
+            eprintln!("WARP smoke test failed: {err}");
+            failed = true;
         }
 
         if failed {
