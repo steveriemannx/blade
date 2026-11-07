@@ -3992,8 +3992,30 @@ mod tests {
         );
     }
 
+    /// The D3D12 debug layer is process-global, and enabling it changes how
+    /// swapchain teardown behaves in some sessions, so the device-lost case runs
+    /// in a child process to keep the rest of the suite on a clean device.
     #[test]
     fn device_lost_is_detected() {
+        if std::env::var_os("BLADE_D3D12_DEVICE_LOST_CHILD").is_some() {
+            device_lost_child();
+            return;
+        }
+        let exe = std::env::current_exe().expect("current test exe");
+        let status = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                "d3d12::tests::device_lost_is_detected",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("BLADE_D3D12_DEVICE_LOST_CHILD", "1")
+            .status()
+            .expect("spawn the device-lost child process");
+        assert!(status.success(), "device-lost child failed: {status}");
+    }
+
+    fn device_lost_child() {
         let options = InitOptions {
             enable_debug_layer: true,
             ..InitOptions::headless()
