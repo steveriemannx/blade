@@ -34,6 +34,7 @@ fn main() {
                 );
                 println!("software adapter: {}", init.adapter_info.is_software);
                 println!("nodes: {}", init.device.node_count());
+                println!("ray tracing tier: {}", init.device.raytracing_tier());
                 println!("debug layer: {}", init.device.has_debug_layer());
                 println!("D3D12 initialization: OK");
             }
@@ -48,6 +49,7 @@ fn main() {
             Ok(init) => {
                 println!("adapter: {}", init.adapter_info.name);
                 println!("software adapter: {}", init.adapter_info.is_software);
+                println!("ray tracing tier: {}", init.device.raytracing_tier());
                 println!("WARP initialization: OK");
             }
             Err(err) => {

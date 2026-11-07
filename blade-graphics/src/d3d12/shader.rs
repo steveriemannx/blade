@@ -185,6 +185,29 @@ fn ps_main(input: VSOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
+/// Ray-query compute shader: traces one ray from `(0, 0, -2)` along `+Z` against
+/// the bound top-level acceleration structure and writes the hit distance (or
+/// `-1` for a miss) into the output buffer.
+pub const RAY_QUERY_HLSL: &str = r#"
+RaytracingAccelerationStructure g_tlas : register(t0);
+RWStructuredBuffer<float> g_hit : register(u0);
+
+[numthreads(1, 1, 1)]
+void main() {
+    RayDesc ray;
+    ray.Origin = float3(0.0, 0.0, -2.0);
+    ray.Direction = float3(0.0, 0.0, 1.0);
+    ray.TMin = 0.0;
+    ray.TMax = 100.0;
+
+    RayQuery<RAY_FLAG_NONE> query;
+    query.TraceRayInline(g_tlas, RAY_FLAG_NONE, 0xFF, ray);
+    while (query.Proceed()) {}
+
+    g_hit[0] = query.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? query.CommittedRayT() : -1.0;
+}
+"#;
+
 /// Trivial compute shader used by tests and examples: writes the dispatch
 /// thread id into the bound output buffer.
 pub const TRIVIAL_COMPUTE_HLSL: &str = r#"

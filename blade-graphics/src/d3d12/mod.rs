@@ -64,9 +64,10 @@ use windows::core::{Error as WinError, HRESULT, Interface, PCSTR, PCWSTR};
 use windows::Win32::Graphics::Direct3D12::{
     D3D_ROOT_SIGNATURE_VERSION_1_0, D3D12_BLEND_DESC, D3D12_BLEND_ONE, D3D12_BLEND_OP_ADD,
     D3D12_BLEND_ZERO, D3D12_BUFFER_SRV, D3D12_BUFFER_SRV_FLAGS, D3D12_BUFFER_UAV,
-    D3D12_BUFFER_UAV_FLAGS, D3D12_CACHED_PIPELINE_STATE, D3D12_CLEAR_FLAG_DEPTH,
-    D3D12_COLOR_WRITE_ENABLE_ALL, D3D12_COMPARISON_FUNC_ALWAYS, D3D12_COMPARISON_FUNC_LESS,
-    D3D12_COMPARISON_FUNC_NEVER, D3D12_COMPUTE_PIPELINE_STATE_DESC,
+    D3D12_BUFFER_UAV_FLAGS, D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC,
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS, D3D12_CACHED_PIPELINE_STATE,
+    D3D12_CLEAR_FLAG_DEPTH, D3D12_COLOR_WRITE_ENABLE_ALL, D3D12_COMPARISON_FUNC_ALWAYS,
+    D3D12_COMPARISON_FUNC_LESS, D3D12_COMPARISON_FUNC_NEVER, D3D12_COMPUTE_PIPELINE_STATE_DESC,
     D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF, D3D12_CONSTANT_BUFFER_VIEW_DESC,
     D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_CULL_MODE_NONE, D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
     D3D12_DEPTH_STENCIL_DESC, D3D12_DEPTH_STENCILOP_DESC, D3D12_DEPTH_WRITE_MASK_ALL,
@@ -76,22 +77,32 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, D3D12_DESCRIPTOR_RANGE,
     D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND, D3D12_DESCRIPTOR_RANGE_TYPE,
     D3D12_DESCRIPTOR_RANGE_TYPE_CBV, D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER,
-    D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_TYPE_UAV, D3D12_FILL_MODE_SOLID,
-    D3D12_FILTER, D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_GPU_DESCRIPTOR_HANDLE,
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC, D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED,
-    D3D12_INDEX_BUFFER_VIEW, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, D3D12_INPUT_ELEMENT_DESC,
-    D3D12_INPUT_LAYOUT_DESC, D3D12_LOGIC_OP_NOOP, D3D12_PIPELINE_STATE_FLAG_NONE,
-    D3D12_PLACED_SUBRESOURCE_FOOTPRINT, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
-    D3D12_RASTERIZER_DESC, D3D12_RENDER_TARGET_BLEND_DESC, D3D12_RESOURCE_BARRIER_TYPE_UAV,
-    D3D12_RESOURCE_DIMENSION_TEXTURE2D, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
-    D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-    D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET,
-    D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_UAV_BARRIER, D3D12_ROOT_CONSTANTS,
-    D3D12_ROOT_DESCRIPTOR_TABLE, D3D12_ROOT_PARAMETER, D3D12_ROOT_PARAMETER_0,
-    D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS, D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
-    D3D12_ROOT_SIGNATURE_DESC, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT,
-    D3D12_ROOT_SIGNATURE_FLAG_NONE, D3D12_ROOT_SIGNATURE_FLAGS, D3D12_SAMPLER_DESC,
-    D3D12_SHADER_BYTECODE, D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_SHADER_RESOURCE_VIEW_DESC_0,
+    D3D12_DESCRIPTOR_RANGE_TYPE_SRV, D3D12_DESCRIPTOR_RANGE_TYPE_UAV, D3D12_ELEMENTS_LAYOUT_ARRAY,
+    D3D12_FEATURE_D3D12_OPTIONS5, D3D12_FILL_MODE_SOLID, D3D12_FILTER,
+    D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_GPU_DESCRIPTOR_HANDLE,
+    D3D12_GPU_VIRTUAL_ADDRESS_AND_STRIDE, D3D12_GRAPHICS_PIPELINE_STATE_DESC,
+    D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED, D3D12_INDEX_BUFFER_VIEW,
+    D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, D3D12_INPUT_ELEMENT_DESC, D3D12_INPUT_LAYOUT_DESC,
+    D3D12_LOGIC_OP_NOOP, D3D12_PIPELINE_STATE_FLAG_NONE, D3D12_PLACED_SUBRESOURCE_FOOTPRINT,
+    D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE, D3D12_RASTERIZER_DESC,
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE,
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO,
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SRV,
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL,
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL, D3D12_RAYTRACING_GEOMETRY_DESC,
+    D3D12_RAYTRACING_GEOMETRY_DESC_0, D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE,
+    D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC, D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES,
+    D3D12_RAYTRACING_INSTANCE_DESC, D3D12_RAYTRACING_TIER_1_0, D3D12_RENDER_TARGET_BLEND_DESC,
+    D3D12_RESOURCE_BARRIER_TYPE_UAV, D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+    D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+    D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE,
+    D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+    D3D12_RESOURCE_UAV_BARRIER, D3D12_ROOT_CONSTANTS, D3D12_ROOT_DESCRIPTOR_TABLE,
+    D3D12_ROOT_PARAMETER, D3D12_ROOT_PARAMETER_0, D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+    D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE, D3D12_ROOT_SIGNATURE_DESC,
+    D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT, D3D12_ROOT_SIGNATURE_FLAG_NONE,
+    D3D12_ROOT_SIGNATURE_FLAGS, D3D12_SAMPLER_DESC, D3D12_SHADER_BYTECODE,
+    D3D12_SHADER_RESOURCE_VIEW_DESC, D3D12_SHADER_RESOURCE_VIEW_DESC_0,
     D3D12_SHADER_VISIBILITY_ALL, D3D12_SRV_DIMENSION_BUFFER, D3D12_SRV_DIMENSION_TEXTURE2D,
     D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE, D3D12_STATIC_SAMPLER_DESC, D3D12_STREAM_OUTPUT_DESC,
     D3D12_TEX2D_SRV, D3D12_TEXTURE_ADDRESS_MODE, D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
@@ -100,6 +111,11 @@ use windows::Win32::Graphics::Direct3D12::{
     D3D12_TEXTURE_LAYOUT_UNKNOWN, D3D12_UAV_DIMENSION_BUFFER, D3D12_UNORDERED_ACCESS_VIEW_DESC,
     D3D12_UNORDERED_ACCESS_VIEW_DESC_0, D3D12_VERTEX_BUFFER_VIEW, D3D12_VIEWPORT,
     D3D12SerializeRootSignature, ID3D12DescriptorHeap, ID3D12PipelineState, ID3D12RootSignature,
+};
+use windows::Win32::Graphics::Direct3D12::{
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_0, D3D12_FEATURE_DATA_D3D12_OPTIONS5,
+    D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+    D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE, ID3D12GraphicsCommandList4,
 };
 pub use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_D32_FLOAT, DXGI_FORMAT_R8_UNORM,
@@ -210,6 +226,8 @@ pub enum Error {
     ShaderToolchain(String),
     /// Root signature serialization failed; the payload holds the diagnostics.
     RootSignature(String),
+    /// The device does not support the requested feature.
+    Unsupported(&'static str),
     /// The device was removed (driver reset/TDR, debug-layer `RemoveDevice`,
     /// invalid resource use, ...). The payload is the `GetDeviceRemovedReason`
     /// code.
@@ -233,6 +251,7 @@ impl fmt::Display for Error {
             Self::RootSignature(diagnostics) => {
                 write!(f, "root signature serialization failed:\n{diagnostics}")
             }
+            Self::Unsupported(feature) => write!(f, "unsupported feature: {feature}"),
             Self::DeviceLost(reason) => {
                 write!(f, "device removed (reason 0x{:08X})", *reason as u32)
             }
@@ -286,6 +305,8 @@ pub enum ResourceState {
     DepthWrite,
     /// Sampled or read as depth, without depth writes.
     DepthRead,
+    /// Ray-tracing acceleration structure, usable by DXR shaders.
+    AccelerationStructure,
 }
 
 impl ResourceState {
@@ -303,6 +324,7 @@ impl ResourceState {
             Self::IndexBuffer => D3D12_RESOURCE_STATE_INDEX_BUFFER,
             Self::DepthWrite => D3D12_RESOURCE_STATE_DEPTH_WRITE,
             Self::DepthRead => D3D12_RESOURCE_STATE_DEPTH_READ,
+            Self::AccelerationStructure => D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
         }
     }
 }
@@ -727,6 +749,16 @@ impl Device {
     /// Creates a committed buffer and returns it in its memory type's initial
     /// state.
     pub fn create_buffer(&self, desc: BufferDesc) -> Result<Buffer, Error> {
+        let state = desc.memory.initial_state();
+        self.create_buffer_in_state(desc, state)
+    }
+
+    /// Creates a committed buffer with an explicit initial resource state.
+    fn create_buffer_in_state(
+        &self,
+        desc: BufferDesc,
+        initial_state: ResourceState,
+    ) -> Result<Buffer, Error> {
         let size = align_up(desc.size, BUFFER_ALIGNMENT).max(BUFFER_ALIGNMENT);
         let heap = D3D12_HEAP_PROPERTIES {
             Type: desc.memory.heap_type(),
@@ -754,14 +786,13 @@ impl Device {
                 D3D12_RESOURCE_FLAG_NONE
             },
         };
-        let state = desc.memory.initial_state();
         let mut resource: Option<ID3D12Resource> = None;
         unsafe {
             if let Err(err) = self.raw.CreateCommittedResource(
                 &heap,
                 D3D12_HEAP_FLAG_NONE,
                 &resource_desc,
-                state.to_d3d12(),
+                initial_state.to_d3d12(),
                 None,
                 &mut resource,
             ) {
@@ -775,7 +806,7 @@ impl Device {
             resource,
             size,
             memory: desc.memory,
-            state: Cell::new(state),
+            state: Cell::new(initial_state),
             allow_unordered_access: desc.allow_unordered_access,
         })
     }
@@ -813,6 +844,9 @@ impl Device {
             return Err(Error::InvalidState("command list is already closed"));
         }
         if let Err(err) = unsafe { encoder.list.Close() } {
+            for message in self.debug_messages() {
+                log::error!("D3D12: {message}");
+            }
             return Err(self.map_device_error(err));
         }
         let command_list: ID3D12CommandList = encoder.list.cast()?;
@@ -2772,6 +2806,295 @@ impl Swapchain {
     }
 }
 
+/// Kind of acceleration structure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccelerationStructureKind {
+    BottomLevel,
+    TopLevel,
+}
+
+/// One triangle geometry for a bottom-level acceleration structure.
+///
+/// The vertex buffer holds `float3` positions; indices are optional. A
+/// geometry-level transform is not supported yet (D3D12 wants a GPU address for
+/// it); bake the transform into the instance transform instead.
+pub struct BlasGeometry<'a> {
+    /// Device-visible buffer of `float3` positions.
+    pub vertices: &'a Buffer,
+    pub vertex_count: u32,
+    /// Vertex stride in bytes (`float3` packing, e.g. 12 or 16).
+    pub vertex_stride: u32,
+    /// Optional index buffer plus its index count and format
+    /// (`R16_UINT`/`R32_UINT`).
+    pub indices: Option<(&'a Buffer, u32, DXGI_FORMAT)>,
+}
+
+/// One instance in a top-level acceleration structure.
+pub struct TlasInstance<'a> {
+    /// 3x4 row-major affine transform (translation in the fourth column).
+    pub transform: [f32; 12],
+    pub blas: &'a AccelerationStructure,
+    /// 8-bit instance mask; `0xFF` makes the instance always visible.
+    pub instance_mask: u8,
+}
+
+/// A built bottom- or top-level acceleration structure.
+pub struct AccelerationStructure {
+    buffer: Buffer,
+    kind: AccelerationStructureKind,
+}
+
+impl AccelerationStructure {
+    pub fn kind(&self) -> AccelerationStructureKind {
+        self.kind
+    }
+
+    /// Size of the built structure in bytes.
+    pub fn size(&self) -> u64 {
+        self.buffer.size()
+    }
+
+    pub fn gpu_address(&self) -> u64 {
+        self.buffer.gpu_address()
+    }
+
+    pub fn state(&self) -> ResourceState {
+        self.buffer.state()
+    }
+}
+
+impl Device {
+    /// The device's DXR tier (`0` when ray tracing is unsupported).
+    pub fn raytracing_tier(&self) -> u32 {
+        let mut options = D3D12_FEATURE_DATA_D3D12_OPTIONS5::default();
+        let result = unsafe {
+            self.raw.CheckFeatureSupport(
+                D3D12_FEATURE_D3D12_OPTIONS5,
+                &mut options as *mut _ as *mut core::ffi::c_void,
+                core::mem::size_of::<D3D12_FEATURE_DATA_D3D12_OPTIONS5>() as u32,
+            )
+        };
+        if result.is_err() {
+            return 0;
+        }
+        options.RaytracingTier.0 as u32
+    }
+
+    /// Builds a bottom-level acceleration structure from triangle geometries.
+    ///
+    /// The build is synchronous: it records, submits and waits. Input buffers
+    /// must be GPU-visible (an upload buffer is fine).
+    pub fn create_bottom_level_acceleration_structure(
+        &self,
+        geometries: &[BlasGeometry<'_>],
+    ) -> Result<AccelerationStructure, Error> {
+        if self.raytracing_tier() < D3D12_RAYTRACING_TIER_1_0.0 as u32 {
+            return Err(Error::Unsupported("ray tracing (DXR tier 1.0)"));
+        }
+        if geometries.is_empty() {
+            return Err(Error::InvalidState(
+                "a bottom-level acceleration structure needs at least one geometry",
+            ));
+        }
+
+        let geometry_descs: Vec<D3D12_RAYTRACING_GEOMETRY_DESC> = geometries
+            .iter()
+            .map(|geometry| {
+                let (index_format, index_count, index_address) = match geometry.indices {
+                    Some((indices, count, format)) => (format, count, indices.gpu_address()),
+                    None => (DXGI_FORMAT_UNKNOWN, 0u32, 0u64),
+                };
+                D3D12_RAYTRACING_GEOMETRY_DESC {
+                    Type: D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES,
+                    Flags: D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE,
+                    Anonymous: D3D12_RAYTRACING_GEOMETRY_DESC_0 {
+                        Triangles: D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC {
+                            Transform3x4: 0,
+                            IndexFormat: index_format,
+                            VertexFormat: DXGI_FORMAT_R32G32B32_FLOAT,
+                            IndexCount: index_count,
+                            VertexCount: geometry.vertex_count,
+                            IndexBuffer: index_address,
+                            VertexBuffer: D3D12_GPU_VIRTUAL_ADDRESS_AND_STRIDE {
+                                StartAddress: geometry.vertices.gpu_address(),
+                                StrideInBytes: u64::from(geometry.vertex_stride),
+                            },
+                        },
+                    },
+                }
+            })
+            .collect();
+        let inputs = D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS {
+            Type: D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL,
+            Flags: D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE,
+            NumDescs: geometry_descs.len() as u32,
+            DescsLayout: D3D12_ELEMENTS_LAYOUT_ARRAY,
+            Anonymous: D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_0 {
+                pGeometryDescs: geometry_descs.as_ptr(),
+            },
+        };
+        self.build_acceleration_structure(
+            inputs,
+            AccelerationStructureKind::BottomLevel,
+            "triangle bottom-level acceleration structure",
+        )
+    }
+
+    /// Builds a top-level acceleration structure over `instances`.
+    ///
+    /// Synchronous like the bottom-level build; the instance descriptors are
+    /// staged in an upload buffer for the duration of the build.
+    pub fn create_top_level_acceleration_structure(
+        &self,
+        instances: &[TlasInstance<'_>],
+    ) -> Result<AccelerationStructure, Error> {
+        if self.raytracing_tier() < D3D12_RAYTRACING_TIER_1_0.0 as u32 {
+            return Err(Error::Unsupported("ray tracing (DXR tier 1.0)"));
+        }
+        if instances.is_empty() {
+            return Err(Error::InvalidState(
+                "a top-level acceleration structure needs at least one instance",
+            ));
+        }
+        for instance in instances {
+            if instance.blas.kind() != AccelerationStructureKind::BottomLevel {
+                return Err(Error::InvalidState(
+                    "top-level instances must reference bottom-level acceleration structures",
+                ));
+            }
+        }
+
+        let instance_descs: Vec<D3D12_RAYTRACING_INSTANCE_DESC> = instances
+            .iter()
+            .map(|instance| D3D12_RAYTRACING_INSTANCE_DESC {
+                Transform: instance.transform,
+                // InstanceID : 24, InstanceMask : 8.
+                _bitfield1: u32::from(instance.instance_mask) << 24,
+                // InstanceContributionToHitGroupIndex : 24, Flags : 8.
+                _bitfield2: 0,
+                AccelerationStructure: instance.blas.gpu_address(),
+            })
+            .collect();
+        let instance_bytes = unsafe {
+            std::slice::from_raw_parts(
+                instance_descs.as_ptr() as *const u8,
+                std::mem::size_of_val(instance_descs.as_slice()),
+            )
+        };
+        // Upload heap keeps the descriptors CPU-writable and GPU-visible.
+        let instance_buffer =
+            self.create_buffer(BufferDesc::new(instance_bytes.len() as u64, Memory::Upload))?;
+        instance_buffer.write(0, instance_bytes)?;
+
+        let inputs = D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS {
+            Type: D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL,
+            Flags: D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE,
+            NumDescs: instance_descs.len() as u32,
+            DescsLayout: D3D12_ELEMENTS_LAYOUT_ARRAY,
+            Anonymous: D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_0 {
+                InstanceDescs: instance_buffer.gpu_address(),
+            },
+        };
+        let acceleration_structure = self.build_acceleration_structure(
+            inputs,
+            AccelerationStructureKind::TopLevel,
+            "instance top-level acceleration structure",
+        )?;
+        // The instance buffer must outlive the build; the synchronous build
+        // already waited, so dropping it here is safe.
+        drop(instance_buffer);
+        Ok(acceleration_structure)
+    }
+
+    fn build_acceleration_structure(
+        &self,
+        inputs: D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS,
+        kind: AccelerationStructureKind,
+        label: &'static str,
+    ) -> Result<AccelerationStructure, Error> {
+        let device5: ID3D12Device5 = self.raw.cast()?;
+        let mut prebuild = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO::default();
+        unsafe {
+            device5.GetRaytracingAccelerationStructurePrebuildInfo(&inputs, &mut prebuild);
+        }
+        if prebuild.ResultDataMaxSizeInBytes == 0 || prebuild.ScratchDataSizeInBytes == 0 {
+            return Err(Error::Unsupported(label));
+        }
+
+        let scratch = self.create_buffer(
+            BufferDesc::new(prebuild.ScratchDataSizeInBytes, Memory::Device)
+                .with_unordered_access(),
+        )?;
+        let result = self.create_buffer_in_state(
+            BufferDesc::new(prebuild.ResultDataMaxSizeInBytes, Memory::Device)
+                .with_unordered_access(),
+            ResourceState::AccelerationStructure,
+        )?;
+
+        let mut encoder = self.record()?;
+        // The build destination is created directly in the ray-tracing state and
+        // the scratch buffer stays in COMMON.
+        encoder.build_acceleration_structure(&D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC {
+            DestAccelerationStructureData: result.gpu_address(),
+            Inputs: inputs,
+            SourceAccelerationStructureData: 0,
+            ScratchAccelerationStructureData: scratch.gpu_address(),
+        });
+        let sp = self.submit(encoder)?;
+        self.wait(sp)?;
+
+        Ok(AccelerationStructure {
+            buffer: result,
+            kind,
+        })
+    }
+
+    /// Creates an SRV over an acceleration structure for ray-query shaders.
+    pub fn create_acceleration_structure_srv(
+        &self,
+        heap: &DescriptorHeap,
+        acceleration_structure: &AccelerationStructure,
+    ) -> Result<DescriptorRange, Error> {
+        self.ensure_heap_type(heap, DescriptorHeapType::CbvSrvUav)?;
+        if acceleration_structure.state() != ResourceState::AccelerationStructure {
+            return Err(Error::InvalidState(
+                "acceleration structure is not in the ray-tracing state",
+            ));
+        }
+        let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
+            Format: DXGI_FORMAT_UNKNOWN,
+            ViewDimension: D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE,
+            Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+            Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+                RaytracingAccelerationStructure: D3D12_RAYTRACING_ACCELERATION_STRUCTURE_SRV {
+                    Location: acceleration_structure.gpu_address(),
+                },
+            },
+        };
+        let range = heap.allocate_one()?;
+        unsafe {
+            self.raw
+                .CreateShaderResourceView(None, Some(&desc), heap.cpu_handle(range.start));
+        }
+        Ok(range)
+    }
+}
+
+impl CommandEncoder {
+    /// Records a `BuildRaytracingAccelerationStructure` call.
+    ///
+    /// The destination and scratch buffers must be in
+    /// [`ResourceState::UnorderedAccess`].
+    pub(crate) fn build_acceleration_structure(
+        &mut self,
+        desc: &D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC,
+    ) {
+        if let Ok(list) = self.list.cast::<ID3D12GraphicsCommandList4>() {
+            unsafe { list.BuildRaytracingAccelerationStructure(desc, None) };
+        }
+    }
+}
+
 /// Result of a successful [`init`] call.
 pub struct Init {
     pub factory: IDXGIFactory6,
@@ -4289,6 +4612,116 @@ fn main() -> @location(0) vec4<f32> {
                 );
             }
         }
+    }
+
+    #[test]
+    fn ray_query_hits_triangle_in_top_level_acceleration_structure() {
+        let init = init_headless();
+        let device = &init.device;
+        if device.raytracing_tier() < D3D12_RAYTRACING_TIER_1_0.0 as u32 {
+            eprintln!(
+                "skipping ray query test: device has ray tracing tier {}",
+                device.raytracing_tier()
+            );
+            return;
+        }
+        let compiler = match ShaderCompiler::load() {
+            Ok(compiler) => compiler,
+            Err(err) => {
+                eprintln!("skipping ray query test: {err}");
+                return;
+            }
+        };
+
+        // One triangle in the Z=0 plane covering the origin.
+        let positions: [f32; 9] = [-1.0, -1.0, 0.0, 1.0, -1.0, 0.0, 0.0, 1.0, 0.0];
+        let vertex_bytes: Vec<u8> = positions.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let vertices = device
+            .create_buffer(BufferDesc::new(vertex_bytes.len() as u64, Memory::Upload))
+            .expect("vertex buffer");
+        vertices.write(0, &vertex_bytes).expect("write vertices");
+
+        let blas = device
+            .create_bottom_level_acceleration_structure(&[BlasGeometry {
+                vertices: &vertices,
+                vertex_count: 3,
+                vertex_stride: 12,
+                indices: None,
+            }])
+            .expect("blas");
+        assert_eq!(blas.kind(), AccelerationStructureKind::BottomLevel);
+        assert!(blas.size() > 0);
+        assert_eq!(blas.state(), ResourceState::AccelerationStructure);
+
+        let tlas = device
+            .create_top_level_acceleration_structure(&[TlasInstance {
+                transform: [
+                    1.0, 0.0, 0.0, 0.0, //
+                    0.0, 1.0, 0.0, 0.0, //
+                    0.0, 0.0, 1.0, 0.0,
+                ],
+                blas: &blas,
+                instance_mask: 0xFF,
+            }])
+            .expect("tlas");
+        assert_eq!(tlas.kind(), AccelerationStructureKind::TopLevel);
+
+        let output = device
+            .create_buffer(BufferDesc::new(4, Memory::Device).with_unordered_access())
+            .expect("output buffer");
+        let readback = device
+            .create_buffer(BufferDesc::new(4, Memory::Readback))
+            .expect("readback buffer");
+
+        let dxil = compiler
+            .compile_hlsl(shader::RAY_QUERY_HLSL, "main", "cs_6_5")
+            .expect("ray query shader");
+        let root = device
+            .create_compute_root_signature(&[
+                RootDescriptorTable {
+                    kind: DescriptorRangeKind::Srv,
+                    count: 1,
+                    base_shader_register: 0,
+                },
+                RootDescriptorTable {
+                    kind: DescriptorRangeKind::Uav,
+                    count: 1,
+                    base_shader_register: 0,
+                },
+            ])
+            .expect("root signature");
+        let pipeline = device
+            .create_compute_pipeline(&dxil, &root)
+            .expect("ray query pipeline");
+
+        let heap = DescriptorHeap::new(device, DescriptorHeapType::CbvSrvUav, 8).expect("heap");
+        let tlas_srv = device
+            .create_acceleration_structure_srv(&heap, &tlas)
+            .expect("tlas srv");
+        let output_uav = device
+            .create_buffer_uav_structured(&heap, &output, 4)
+            .expect("output uav");
+
+        let mut encoder = device.record().expect("encoder");
+        encoder.transition_buffer(&output, ResourceState::UnorderedAccess);
+        encoder.set_descriptor_heap(&heap);
+        encoder.set_compute_pipeline(&pipeline);
+        encoder.set_compute_descriptor_table(0, &heap, tlas_srv);
+        encoder.set_compute_descriptor_table(1, &heap, output_uav);
+        encoder.dispatch([1, 1, 1]);
+        encoder.uav_barrier(&output);
+        encoder.transition_buffer(&output, ResourceState::CopySource);
+        encoder.copy_buffer(&readback, 0, &output, 0, 4);
+        let sp = device.submit(encoder).expect("submit");
+        device.wait(sp).expect("wait");
+        device.check_device().expect("device alive after ray query");
+
+        let bytes = readback.read().expect("readback");
+        let hit = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        assert!(
+            (hit - 2.0).abs() < 1e-4,
+            "expected the ray to hit the triangle at t=2.0, got {hit}"
+        );
     }
 
     #[test]

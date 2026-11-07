@@ -13,6 +13,7 @@ Changelog for *Blade* project
 - graphics: the Windows-only `d3d12` backend caches root signatures and pipeline states by content hash (with hit/miss stats) and detects device loss, surfacing `Error::DeviceLost` from `record`/`submit`/`wait`/resource creation; a debug-layer `RemoveDevice` test covers the loss path
 - graphics: the Windows-only `d3d12` backend wires the WGSL front end — naga `hlsl-out` translates WGSL to HLSL and DXC compiles it to DXIL, so shaders can be authored in WGSL; a new example renders a WGSL fullscreen triangle on hardware and WARP
 - graphics: the Windows-only `d3d12` backend maps WGSL `@group(0)` resource bindings onto HLSL registers (uniform buffers to root constants, textures to SRV tables), so resource-bound WGSL shaders run; sampler bindings remain on the naga sampler-heap model and are not wired yet
+- graphics: the Windows-only `d3d12` backend adds DXR ray tracing — bottom/top-level acceleration structure builds, acceleration-structure SRVs and inline ray-query compute shaders (`cs_6_5`), verified by tracing a ray against a triangle on WARP; `raytracing_tier` reports adapter support
 - render: retain SVGF history on frozen frames; vehicle diagnostic captures require `BLADE_CAPTURE_VEHICLE=1` even when running ignored tests
 - graphics: ray queries require macOS 13+ / iOS 16+ on Metal; compute limits report direct sampled-texture slots, and renderer resource tables account for Vulkan image descriptors
 - render: `GBufferViews::motion` is now `Rgba16Float`, with screen-space motion in XY and previous-hit distance in Z
