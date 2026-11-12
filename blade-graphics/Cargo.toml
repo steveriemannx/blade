@@ -164,7 +164,7 @@ objc2-ui-kit = { version = "0.3", default-features = false, features = [
     "UIScreen",
 ] }
 
-[target.'cfg(any(vulkan, windows, target_os = "linux", target_os = "android", target_os = "freebsd"))'.dependencies]
+[target.'cfg(any(vulkan, windows, target_os = "linux", target_os = "android", target_os = "freebsd", target_os = "redox"))'.dependencies]
 ash = "0.38"
 ash-window = "0.13"
 gpu-alloc = "0.6"

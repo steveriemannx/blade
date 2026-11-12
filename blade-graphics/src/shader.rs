@@ -128,7 +128,8 @@ pub static EMPTY_CONSTANTS: Lazy<super::PipelineConstants> = Lazy::new(Default::
         windows,
         target_os = "linux",
         target_os = "android",
-        target_os = "freebsd"
+        target_os = "freebsd",
+        target_os = "redox"
     )
 ))]
 impl<'a> super::ShaderFunction<'a> {
@@ -275,7 +276,8 @@ impl<'a> super::ShaderFunction<'a> {
         windows,
         target_os = "linux",
         target_os = "android",
-        target_os = "freebsd"
+        target_os = "freebsd",
+        target_os = "redox"
     )
 ))]
 pub(crate) fn validate_workgroup_matrices(
@@ -872,7 +874,8 @@ fn main() {
         windows,
         target_os = "linux",
         target_os = "android",
-        target_os = "freebsd"
+        target_os = "freebsd",
+        target_os = "redox"
     )
 ))]
 mod entry_point_tests {
@@ -1069,7 +1072,8 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) { halves[id.x] = f16(1.0);
         windows,
         target_os = "linux",
         target_os = "android",
-        target_os = "freebsd"
+        target_os = "freebsd",
+        target_os = "redox"
     )
 ))]
 mod workgroup_tests {

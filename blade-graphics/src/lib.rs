@@ -71,7 +71,8 @@ pub mod derive;
             windows,
             target_os = "linux",
             target_os = "android",
-            target_os = "freebsd"
+            target_os = "freebsd",
+            target_os = "redox"
         )
     ),
     path = "vulkan/mod.rs"
@@ -137,7 +138,8 @@ impl std::error::Error for PlatformError {}
     windows,
     target_os = "linux",
     target_os = "android",
-    target_os = "freebsd"
+    target_os = "freebsd",
+    target_os = "redox"
 )))]
 pub mod openxr {
     #[derive(Clone, Debug)]
